@@ -398,7 +398,7 @@ int main() {
 				c: {
 					label: 'C — qsort over stdin',
 					language: 'C',
-					standard: 'gnu17',
+					standard: 'gnu23',
 					code: `#include <stdio.h>
 #include <stdlib.h>
 
@@ -427,8 +427,9 @@ int main(void) {
 			// options consistent with each other. Passing -std=c++NN (strict) instead would
 			// silently reject GNU extensions the runtime's own default accepts.
 			//
-			// C++23 is the default: validated against a 38-case matrix, 35 passed and every case
-			// that passes at C++20 also passes here (see README).
+			// C++23 / C23 are the defaults: validated against matrices at each standard, both are
+			// strict supersets of the lower ones (every case that passes lower also passes here),
+			// and the C++ default gains 10 features over C++20. See README.
 			const STANDARDS = {
 				CPP: [
 					['gnu++11', 'C++11'],
@@ -439,11 +440,11 @@ int main(void) {
 				],
 				C: [
 					['gnu11', 'C11'],
-					['gnu17', 'C17 (default)'],
-					['gnu23', 'C23']
+					['gnu17', 'C17'],
+					['gnu23', 'C23 (default)']
 				]
 			};
-			const DEFAULT_STANDARD = { CPP: 'gnu++23', C: 'gnu17' };
+			const DEFAULT_STANDARD = { CPP: 'gnu++23', C: 'gnu23' };
 
 			const els = {
 				code: document.getElementById('code'),
@@ -646,6 +647,10 @@ int main(void) {
 			const loadExample = (key) => {
 				const example = EXAMPLES[key];
 				if (!example) return;
+				// Keep the Example dropdown in step when this is called from the language switch.
+				if ([...els.example.options].some((option) => option.value === key)) {
+					els.example.value = key;
+				}
 				els.language.value = example.language;
 				fillSelect(els.standard, STANDARDS[example.language]);
 				els.standard.value = example.standard;

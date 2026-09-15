@@ -40,7 +40,7 @@ Compare that with the main-thread version, where the same compile produced a sin
 | Control | What it does |
 | --- | --- |
 | **Lang** | C++ or C — switches the standard list, the default and the example |
-| **Std** | `gnu++11` … **`gnu++23`** (default), or `gnu11` / **`gnu17`** (default) / `gnu23`. Prepended as `-std=`, so the extra Compile args can still override it |
+| **Std** | `gnu++11` … **`gnu++23`** (default), or `gnu11` / `gnu17` / **`gnu23`** (default). Prepended as `-std=`, so the extra Compile args can still override it |
 | **Example** | Four C++ samples plus one C sample — see below |
 | **Compile args** | Extra clang flags, e.g. `-Wall -O2` |
 | **Program args / stdin** | argv and stdin for the compiled program |
@@ -49,10 +49,12 @@ Standards are `gnu++NN`, not `c++NN`: that matches what GCC and Clang do by defa
 explicit options consistent with each other. Passing strict `-std=c++NN` would silently reject GNU
 extensions that `gnu++NN` accepts.
 
-### Why C++23 is the default
+### Why C++23 and C23 are the defaults
 
-Validated with a 38-case matrix (`std-probe.html`, run at each standard against the rebuilt
-toolchain):
+Both were validated with a matrix per language, run at each standard against the rebuilt toolchain
+(`std-probe.html`).
+
+C++ (38 cases):
 
 | Standard | Result |
 | --- | --- |
@@ -60,29 +62,56 @@ toolchain):
 | `c++23` | **35/38** |
 | `gnu++23` | **35/38** — identical to `c++23` |
 
-**Every case that passes at C++20 also passes at C++23** — it is a strict superset, so promoting the
-default costs nothing and unlocks 10 more features (`expected`, `unexpected`, `print`/`println`,
+**Every case that passes at C++20 also passes at C++23** — a strict superset, so promoting the
+default costs nothing and unlocks 10 features (`expected`, `unexpected`, `print`/`println`,
 `byteswap`, `to_underlying`, `mdspan`, `flat_map`, `views::zip`, deducing `this`, multi-subscript,
 `auto(x)` decay copy).
 
-The 3 failures are all real but none are standard-related:
+The 3 C++ failures are real but none are standard-related:
 
-- **`<stacktrace>`** — the header does not exist in libc++ 22 at all (checked the source tree). It
-  fails at every standard, and is a long-standing libc++ gap.
+- **`<stacktrace>`** — the header does not exist in libc++ 22 at all (checked the source tree). Fails
+  at every standard; a long-standing libc++ gap.
 - **`constexpr std::sqrt`** — `error: constexpr variable 'r' must be initialized by a constant
-  expression`. libc++ defines `__cpp_lib_constexpr_cmath` but the implementation is not usable in a
-  constant expression here.
-- **`auto(x)`** — my original test case was wrong (it called `.size()` on the decayed pointer). It
-  works; corrected cases pass.
+  expression`. libc++ defines `__cpp_lib_constexpr_cmath` but it is not usable in a constant
+  expression here.
+- **`auto(x)`** — my original case was wrong (called `.size()` on the decayed pointer). It works.
+
+C (28 cases):
+
+| Standard | Result |
+| --- | --- |
+| `gnu17` | **20/28** |
+| `gnu23` | **25/28** |
+
+Again a strict superset. C23 adds `bool`/`true`/`false` and `static_assert` as keywords, `nullptr`,
+`constexpr`, `unreachable()`, and digit separators.
+
+**C23's library side is thinner than C++23's** — the same 3 headers are missing at *both* standards,
+so they are not a reason to prefer C17:
+
+- `<uchar.h>` — `fatal error: 'uchar.h' file not found`
+- `<threads.h>` — `fatal error: 'threads.h' file not found`
+- `<stdbit.h>` — `fatal error: 'stdbit.h' file not found`
+
+These come from **wasi-libc**, and the rebuild only restored **libc++ (C++)** headers — wasi-libc's C
+headers were never touched. So "C23" here means the C23 *language* plus a partial C23 library. Adding
+`<stdbit.h>` would be cheap (it is mostly macros and builtins); `<threads.h>` would need a real
+threading implementation.
+
+Be aware that C23 is a more disruptive change than C++23 relative to C17: several words became
+keywords, and an empty parameter list `()` now means `(void)` rather than "unspecified". Clang's own
+default for `wasm32-wasi` is still C17 (`__STDC_VERSION__ 201710L`), and GCC only switched to C23 in
+GCC 15 — so `gnu23` is ahead of what most C compilers do by default. If you would rather match the
+compiler's own default, set `DEFAULT_STANDARD.C` to `'gnu17'` in `index.html`.
 
 Reproduce:
 
 ```
-http://localhost:4173/std-probe.html?std=gnu%2B%2B23     # or c%2B%2B20 for the baseline
+http://localhost:4173/std-probe.html?std=gnu%2B%2B23              # C++, default
+http://localhost:4173/std-probe.html?std=c%2B%2B20                # C++ baseline
+http://localhost:4173/std-probe.html?lang=C&std=gnu23             # C, default
+http://localhost:4173/std-probe.html?lang=C&std=gnu17             # C baseline
 ```
-
-For C, `gnu11` / `gnu17` / `gnu23` all compile basic programs; only `<stdbit.h>` (C23) is absent,
-which comes from wasi-libc rather than the rebuilt libc++.
 
 The toolchain has to be hosted somewhere reachable. Precedence:
 
@@ -326,7 +355,7 @@ LiveCodes ships **two** C++ languages, and only one of them is a compiler.
 | Runtime | JSCPP — **JS interpreter** | Clang **8.0.1** → Wasm | Clang **22.1.8** → Wasm | Clang **22.1.8** → Wasm |
 | LLVM release | n/a | 2019 | 2026 | 2026 |
 | Package last published | — | **2022** | 2026-09 | — |
-| Default `-std` | n/a | none passed → `gnu++14` | `gnu++20` / `gnu11` | **`gnu++23`** / `gnu17` |
+| Default `-std` | n/a | none passed → `gnu++14` | `gnu++20` / `gnu11` | **`gnu++23`** / `gnu23` |
 | Usable standards | n/a | **C++14 only** | C++11 … C++20 | **C++11 … C++23** |
 | Compile flags exposed | — | no (argv hardcoded) | yes | yes |
 | Diagnostics | interpreter msgs | `Error: …` string | `file:line:col` + severity | `file:line:col` + severity |

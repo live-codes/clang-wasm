@@ -22,11 +22,13 @@
 			globalThis.SharedArrayBuffer ??= class SharedArrayBuffer {};
 
 			const params = new URLSearchParams(location.search);
-			const MODE = params.get('std') || 'c++23';
+			const MODE = params.get('std') || 'gnu++23';
+			const LANG = params.get('lang') === 'C' ? 'C' : 'CPP';
 			const BASE = params.get('baseUrl') || '/clang/';
 			const MODULE = params.get('module') || 'https://esm.sh/@wasm-idle/llvm-core@1.0.0/clang';
 
-			document.getElementById('title').textContent = 'feature matrix @ -std=' + MODE;
+			document.getElementById('title').textContent =
+				'feature matrix @ ' + LANG + ' -std=' + MODE;
 
 			const CASES = [
 				{ n: 'baseline iostream+vector+algorithm', c: '#include <iostream>\n#include <vector>\n#include <algorithm>\nint main(){ std::vector<int> v{3,1,2}; std::sort(v.begin(),v.end()); for(int x:v) std::cout<<x; }\n' },
@@ -69,6 +71,37 @@
 				{ n: 'C++23 lambda in constexpr', c: 'constexpr int f(){ auto l=[](){ return 7; }; return l(); }\nint main(){ return f()-7; }\n' }
 			];
 
+			const C_CASES = [
+				{ n: 'baseline printf/scanf/qsort', c: '#include <stdio.h>\n#include <stdlib.h>\nstatic int cmp(const void*a,const void*b){ return *(const int*)a - *(const int*)b; }\nint main(void){ int v[3]={3,1,2}; qsort(v,3,sizeof(int),cmp); printf("%d\\n", v[0]); return v[0]-1; }\n' },
+				{ n: 'C99 designated initializers', c: 'struct P{int x;int y;};\nint main(void){ struct P p={.y=2,.x=1}; return p.x+p.y-3; }\n' },
+				{ n: 'C99 compound literals', c: 'struct P{int x;int y;};\nint sum(struct P p){ return p.x+p.y; }\nint main(void){ return sum((struct P){1,2})-3; }\n' },
+				{ n: 'C99 long long + stdint', c: '#include <stdint.h>\nint main(void){ int64_t v=1; unsigned long long u=2; return (int)(v+u)-3; }\n' },
+				{ n: 'C99 VLA', c: '#include <string.h>\nint main(int argc,char**argv){ int n=argc+2; char buf[n]; memset(buf,0,sizeof buf); return (int)sizeof(buf)-3-(argc-1); }\n' },
+				{ n: 'C11 _Generic', c: 'int f(int x){ return x; }\nint main(void){ return _Generic(1, int: f(3))-3; }\n' },
+				{ n: 'C11 _Static_assert', c: '_Static_assert(sizeof(int)==4, "int is 4");\nint main(void){ return 0; }\n' },
+				{ n: 'C11 anonymous struct/union', c: 'struct S{ union { int a; float b; }; };\nint main(void){ struct S s; s.a=5; return s.a-5; }\n' },
+				{ n: 'C11 <stdalign.h>', c: '#include <stdalign.h>\nint main(void){ alignas(16) char buf[32]; return (int)((size_t)buf % 16); }\n' },
+				{ n: 'C11 <stdnoreturn.h>', c: '#include <stdnoreturn.h>\n#include <stdlib.h>\nnoreturn void die(void){ exit(0); }\nint main(void){ die(); }\n' },
+				{ n: 'C11 _Noreturn', c: '#include <stdlib.h>\n_Noreturn void die(void){ exit(0); }\nint main(void){ die(); }\n' },
+				{ n: 'C11 <uchar.h> char16_t', c: '#include <uchar.h>\nint main(void){ char16_t c=u\'x\'; return (int)c-120; }\n' },
+				{ n: 'C11 <stdatomic.h>', c: '#include <stdatomic.h>\nint main(void){ atomic_int v=0; atomic_store(&v,3); return atomic_load(&v)-3; }\n' },
+				{ n: 'C11 <threads.h>', c: '#include <threads.h>\nint main(void){ mtx_t m; mtx_init(&m, mtx_plain); mtx_destroy(&m); return 0; }\n' },
+				{ n: 'C23 bool/true/false keywords', c: 'int main(void){ bool b = true; return b ? 0 : 1; }\n' },
+				{ n: 'C23 static_assert keyword', c: 'static_assert(sizeof(int)==4);\nint main(void){ return 0; }\n' },
+				{ n: 'C23 typeof', c: 'int main(void){ int x=3; typeof(x) y=x; return y-3; }\n' },
+				{ n: 'C23 nullptr', c: '#include <stddef.h>\nint main(void){ int* p = nullptr; return p==nullptr ? 0 : 1; }\n' },
+				{ n: 'C23 constexpr', c: 'constexpr int n = 3;\nint main(void){ return n-3; }\n' },
+				{ n: 'C23 [[nodiscard]]', c: '[[nodiscard]] int f(void){ return 0; }\nint main(void){ return f(); }\n' },
+				{ n: 'C23 binary literals + separators', c: 'int main(void){ int v = 0b1010\\\'0001; return v-161; }\n' },
+				{ n: 'C23 <stdbit.h>', c: '#include <stdbit.h>\nint main(void){ return (int)stdc_leading_zeros(1u)-31; }\n' },
+				{ n: 'C23 <stdckdint.h>', c: '#include <stdckdint.h>\nint main(void){ int r=0; ckd_add(&r,1,2); return r-3; }\n' },
+				{ n: 'C23 #elifdef', c: '#define A\n#if defined(B)\nint x=1;\n#elifdef A\nint x=2;\n#else\nint x=3;\n#endif\nint main(void){ return x-2; }\n' },
+				{ n: 'C23 enum fixed underlying type', c: 'enum E : unsigned char { A = 3 };\nint main(void){ return (int)A-3; }\n' },
+				{ n: 'C23 empty initializer {}', c: 'struct P{int x;};\nint main(void){ struct P p = {}; return p.x; }\n' },
+				{ n: 'C23 unreachable()', c: '#include <stddef.h>\nint main(void){ int x=0; if (x) unreachable(); return 0; }\n' },
+				{ n: 'C23 <stdcountof.h>', c: '#include <stdcountof.h>\nint main(void){ int a[4]; return (int)countof(a)-4; }\n' }
+			];
+
 			const log = document.getElementById('log');
 			const lines = [];
 			window.__std = 'RUNNING';
@@ -94,13 +127,14 @@
 				log.textContent = lines.join('\n');
 
 				const results = [];
-				for (const test of CASES) {
+				const CASES_ACTIVE = LANG === 'C' ? C_CASES : CASES;
+				for (const test of CASES_ACTIVE) {
 					let failed = false;
 					let captured = '';
 					try {
 						await runtime.compileArtifact(test.c, {
-							language: 'CPP',
-							fileName: 'p_' + test.n.replace(/[^a-z0-9]/gi, '_') + '.cpp',
+							language: LANG,
+							fileName: 'p_' + test.n.replace(/[^a-z0-9]/gi, '_') + (LANG === 'C' ? '.c' : '.cpp'),
 							compileArgs: ['-std=' + MODE]
 						});
 					} catch (error) {
