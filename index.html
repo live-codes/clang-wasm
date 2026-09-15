@@ -30,16 +30,18 @@
 			header {
 				display: flex;
 				align-items: center;
-				gap: 12px;
-				padding: 10px 16px;
+				gap: 10px;
+				padding: 10px 16px 8px;
 				border-bottom: 1px solid var(--border);
 				background: var(--panel);
 				flex-wrap: wrap;
 			}
-			header h1 { font-size: 14px; margin: 0; font-weight: 600; }
-			header .sub { color: var(--muted); font-size: 12px; }
+			header h1 { font-size: 14px; margin: 0; font-weight: 600; white-space: nowrap; }
+			header .sub { color: var(--muted); font-size: 12px; white-space: nowrap; }
 			.spacer { flex: 1; }
 			.controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+			.field { display: flex; align-items: center; gap: 5px; }
+			.field > label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
 
 			button, select, input, textarea {
 				font-family: inherit;
@@ -55,6 +57,7 @@
 			button:hover:not(:disabled) { border-color: var(--accent); }
 			button:disabled { opacity: .55; cursor: progress; }
 			button.primary { background: var(--accent); border-color: var(--accent); color: #0d1117; font-weight: 600; }
+			select.small { padding: 5px 8px; font-size: 12px; }
 
 			main { flex: 1; display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
 			@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
@@ -74,6 +77,7 @@
 				gap: 8px;
 				align-items: center;
 			}
+			.pane > h2 .spacer { flex: 1; }
 			#code { flex: 1; border: 0; border-radius: 0; padding: 14px; tab-size: 4; }
 			#code:focus, #stdin:focus, #args:focus, #cflags:focus { outline: none; }
 
@@ -115,16 +119,13 @@
 				border: 1px solid var(--border);
 				background: var(--panel-2);
 				color: var(--muted);
+				white-space: nowrap;
 			}
 			.badge.ready { color: var(--ok); border-color: #2d5f47; }
 			.badge.error { color: var(--err); border-color: #6b3030; }
+			.badge.full { color: var(--accent); border-color: #35507e; }
 
-			#progress {
-				height: 3px;
-				background: var(--border);
-				overflow: hidden;
-				flex-basis: 100%;
-			}
+			#progress { height: 3px; background: var(--border); overflow: hidden; flex-basis: 100%; }
 			#progress > div { height: 100%; width: 0; background: var(--accent); transition: width .12s linear; }
 		</style>
 	</head>
@@ -135,10 +136,17 @@
 			<span id="assets" class="badge" title="Compiler asset host"></span>
 			<span class="spacer"></span>
 			<div class="controls">
-				<select id="language" title="Source language">
-					<option value="CPP" selected>C++</option>
-					<option value="C">C</option>
-				</select>
+				<span class="field">
+					<label for="language">Lang</label>
+					<select id="language" class="small">
+						<option value="CPP" selected>C++</option>
+						<option value="C">C</option>
+					</select>
+				</span>
+				<span class="field">
+					<label for="standard">Std</label>
+					<select id="standard" class="small"></select>
+				</span>
 				<button id="run" class="primary">Compile &amp; Run</button>
 				<button id="clear">Clear</button>
 				<span id="status" class="badge">idle</span>
@@ -148,11 +156,18 @@
 
 		<main>
 			<section class="pane">
-				<h2>Source <span id="filename" class="badge">main.cpp</span></h2>
+				<h2>
+					Source <span id="filename" class="badge">main.cpp</span>
+					<span class="spacer"></span>
+					<span class="field">
+						<label for="example">Example</label>
+						<select id="example" class="small"></select>
+					</span>
+				</h2>
 				<textarea id="code" spellcheck="false"></textarea>
 				<div class="options">
 					<label for="cflags">Compile args</label>
-					<input id="cflags" value="" placeholder="e.g. -std=c++23 -Wall -O2" />
+					<input id="cflags" value="" placeholder="e.g. -Wall -O2" />
 					<label for="args">Program args</label>
 					<input id="args" value="" placeholder="e.g. --verbose hello" />
 					<label for="stdin">stdin</label>
@@ -167,27 +182,40 @@
 		</main>
 
 		<script type="module">
-			// Swap this for a local bundle if you'd rather not depend on a CDN:
-			//   npm install && npm run bundle   ->   "./vendor/llvm-core-clang.js"
-			// The bundled path is selected with ?local=1.
-			const useLocalBundle = new URLSearchParams(location.search).has('local');
+			// ---------------------------------------------------------------------------
+			// Module source. Defaults to a CDN so the page needs no bundler; `?local=1`
+			// uses the bundled copy instead (npm run bundle).
+			// ---------------------------------------------------------------------------
 			const LLVM_CORE_URL =
 				window.LLVM_CORE_URL ??
-				(useLocalBundle
+				(new URLSearchParams(location.search).has('local')
 					? './vendor/llvm-core-clang.js'
 					: 'https://esm.sh/@wasm-idle/llvm-core@1.0.0/clang');
 
-			// The compiler toolchain lives on a static host (the package ships code only).
-			// Assets used: runtime-manifest.v1.json, bin/{memfs,clang,lld}.wasm.gz, bin/sysroot.tar.gz
+			// ---------------------------------------------------------------------------
+			// Compiler assets. The npm package ships code only; the toolchain is fetched
+			// from a base URL. Only the rebuilt toolchain is supported - the upstream one
+			// ships a pruned libc++ (memfs caps at 1019 files) that cannot compile most
+			// of C++20/23.
 			//
-			// Point this at your own mirror without editing this file, via either:
+			// Relative by default, so the page takes its toolchain from whatever origin is
+			// serving it (serve.mjs hosts /clang/ alongside the page). Point it elsewhere
+			// - a CDN, say - without editing the file:
 			//   ?baseUrl=https://cdn.example.com/clang/
-			//   window.RUNTIME_BASE_URL = 'https://cdn.example.com/clang/'   (set before this module runs)
-			const DEFAULT_RUNTIME_BASE_URL = 'https://seorii.page/wasm-idle/clang/';
+			//   window.RUNTIME_BASE_URL = 'https://cdn.example.com/clang/'   (before this module runs)
+			// ---------------------------------------------------------------------------
+			const DEFAULT_RUNTIME_BASE_URL = '/clang/';
 			const RUNTIME_BASE_URL =
 				new URLSearchParams(location.search).get('baseUrl') ||
 				window.RUNTIME_BASE_URL ||
 				DEFAULT_RUNTIME_BASE_URL;
+
+			// @wasm-idle/llvm-core's core/memory.js does `buf instanceof SharedArrayBuffer`
+			// unconditionally, which throws "SharedArrayBuffer is not defined" on a page that is
+			// not cross-origin isolated. The ordinary (non-debug) path never creates a real one,
+			// so a stub keeps that branch from throwing and the page no longer needs COOP/COEP.
+			// Only the LLDB debug path needs real shared memory.
+			globalThis.SharedArrayBuffer ??= class SharedArrayBuffer {};
 
 			const resolveAssetBaseUrl = () => {
 				let url;
@@ -199,16 +227,8 @@
 				if (url.protocol !== 'http:' && url.protocol !== 'https:') {
 					throw new Error(`baseUrl must use http(s), got ${url.protocol}//`);
 				}
-				// normalizeBaseUrl() in the library appends the trailing slash.
 				return url.href;
 			};
-
-			// @wasm-idle/llvm-core's core/memory.js does `buf instanceof SharedArrayBuffer`
-			// unconditionally, which throws "SharedArrayBuffer is not defined" on a page that is
-			// not cross-origin isolated. The ordinary (non-debug) path never creates a real one,
-			// so a stub keeps that branch from throwing and the page no longer needs COOP/COEP.
-			// Only the LLDB debug path needs real shared memory.
-			globalThis.SharedArrayBuffer ??= class SharedArrayBuffer {};
 
 			const {
 				BrowserClangRuntime,
@@ -217,13 +237,32 @@
 				resolveRuntimeManifestUrl
 			} = await import(LLVM_CORE_URL);
 
-			const SAMPLES = {
-				CPP: `#include <algorithm>
+			// ---------------------------------------------------------------------------
+			// Examples. The first two run on either asset set; the C++23 and "full library"
+			// ones need the rebuilt set.
+			// ---------------------------------------------------------------------------
+			const EXAMPLES = {
+				basics: {
+					label: 'C++ — containers & algorithms',
+					language: 'CPP',
+					standard: '',
+					code: `#include <algorithm>
+#include <format>
 #include <iostream>
 #include <numeric>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
+
+static std::string join(const std::vector<int>& values) {
+    std::string out;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i) out += ' ';
+        out += std::to_string(values[i]);
+    }
+    return out;
+}
 
 int main() {
     std::cout << "clang " << __clang_version__ << "\\n";
@@ -237,13 +276,112 @@ int main() {
     }
 
     std::sort(values.begin(), values.end());
-    std::cout << "sorted:";
-    for (int value : values) std::cout << ' ' << value;
-    std::cout << "\\nsum = " << std::accumulate(values.begin(), values.end(), 0) << "\\n";
-    return 0;
+    const int total = std::accumulate(values.begin(), values.end(), 0);
+    std::optional<int> biggest = values.empty() ? std::nullopt : std::optional(values.back());
+
+    std::cout << std::format("sorted: {}\\n", join(values));
+    std::cout << std::format("sum = {}, max = {}\\n", total, biggest.value_or(0));
 }
-`,
-				C: `#include <stdio.h>
+`
+				},
+				ranges: {
+					label: 'C++20 — ranges & span',
+					language: 'CPP',
+					standard: 'c++20',
+					code: `// <ranges> and <span> are pruned from the upstream sysroot; the rebuild restores them.
+#include <iostream>
+#include <numbers>
+#include <ranges>
+#include <span>
+#include <vector>
+
+int double_it(int value) { return value * 2; }
+
+int main() {
+    std::vector<int> values{1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+
+    std::cout << "even:";
+    for (int value : values | std::views::filter([](int v) { return v % 2 == 0; }))
+        std::cout << ' ' << value;
+
+    std::cout << "\\ndoubled:";
+    for (int value : values | std::views::transform(double_it) | std::views::take(5))
+        std::cout << ' ' << value;
+
+    std::span<int> view(values.data(), 3);
+    std::cout << "\\nfirst three: " << view.size() << " elements, front = " << view.front();
+
+    std::cout << "\\npi ~ " << std::numbers::pi << "\\n";
+}
+`
+				},
+				cxx23: {
+					label: 'C++23 — expected, print, charconv',
+					language: 'CPP',
+					standard: 'c++23',
+					code: `// C++23 mode needs __ostream/print.h, which is pruned from the upstream sysroot
+// (it breaks <iostream> under -std=c++23). The rebuild restores it.
+//
+// Note: exceptions are disabled in this toolchain, so parsing is done with
+// std::from_chars rather than try/catch. -fcxx-exceptions does not fix it.
+#include <bit>
+#include <charconv>
+#include <cstdint>
+#include <expected>
+#include <print>
+#include <string>
+#include <string_view>
+#include <system_error>
+
+std::expected<int, std::string> parse(std::string_view text) {
+    int value = 0;
+    const char* first = text.data();
+    const char* last = text.data() + text.size();
+    auto [ptr, ec] = std::from_chars(first, last, value);
+    if (ec != std::errc{} || ptr != last)
+        return std::unexpected("not a number: " + std::string(text));
+    return value;
+}
+
+int main() {
+    std::println("__cplusplus = {}", __cplusplus);
+
+    for (std::string_view raw : {"42", "oops", "7"}) {
+        if (auto value = parse(raw))
+            std::println("parsed {}", *value);
+        else
+            std::println("failed: {}", value.error());
+    }
+
+    std::println("byteswap(0x1234) = {:#x}", unsigned(std::byteswap(std::uint16_t{0x1234})));
+}
+`
+				},
+				blit: {
+					label: 'C++20 — <bit> (was broken)',
+					language: 'CPP',
+					standard: 'c++20',
+					code: `// <bit> is present upstream but its internal __bit/byteswap.h is pruned, so it
+// fails with "file not found". The rebuild restores it.
+#include <bit>
+#include <cstdint>
+#include <iostream>
+
+int main() {
+    constexpr auto bits = std::bit_cast<std::uint32_t>(1.0f);
+    std::cout << "bit_cast<float>(1.0f) = 0x" << std::hex << bits << std::dec << "\\n";
+    std::cout << "popcount(0b101101)   = " << std::popcount(0b101101u) << "\\n";
+    std::cout << "has_single_bit(64)   = " << std::has_single_bit(64u) << "\\n";
+    std::cout << "countl_zero(1)       = " << std::countl_zero(1u) << "\\n";
+    std::cout << "bit_ceil(37)         = " << std::bit_ceil(37u) << "\\n";
+}
+`
+				},
+				c: {
+					label: 'C — qsort over stdin',
+					language: 'C',
+					standard: '',
+					code: `#include <stdio.h>
 #include <stdlib.h>
 
 static int compare(const void *left, const void *right) {
@@ -264,11 +402,31 @@ int main(void) {
     return 0;
 }
 `
+				}
+			};
+
+			const STANDARDS = {
+				CPP: [
+					['', 'default (C++20)'],
+					['c++11', 'C++11'],
+					['c++14', 'C++14'],
+					['c++17', 'C++17'],
+					['c++20', 'C++20'],
+					['c++23', 'C++23']
+				],
+				C: [
+					['', 'default (C11)'],
+					['c11', 'C11'],
+					['c17', 'C17'],
+					['c23', 'C23']
+				]
 			};
 
 			const els = {
 				code: document.getElementById('code'),
 				language: document.getElementById('language'),
+				standard: document.getElementById('standard'),
+				example: document.getElementById('example'),
 				filename: document.getElementById('filename'),
 				cflags: document.getElementById('cflags'),
 				args: document.getElementById('args'),
@@ -299,11 +457,7 @@ int main(void) {
 				els.progress.style.width = `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
 			};
 
-			const parseArgs = (value) =>
-				value
-					.trim()
-					.split(/\s+/)
-					.filter(Boolean);
+			const parseArgs = (value) => value.trim().split(/\s+/).filter(Boolean);
 
 			// The runtime always compiles with -fcolor-diagnostics, so clang's messages arrive
 			// wrapped in SGR escapes. Strip them before rendering (and before matching on them:
@@ -311,23 +465,40 @@ int main(void) {
 			// eslint-disable-next-line no-control-regex
 			const stripAnsi = (text) => text.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
 
-			// stdin provider: hands the whole buffer over once, then signals EOF with null.
-			const makeStdin = (text) => {
-				if (!text) return () => null;
-				let sent = false;
-				return () => {
-					if (sent) return null;
-					sent = true;
-					return text;
-				};
+			// ---------------------------------------------------------------------------
+			// Asset source badge. Shows which host the toolchain is coming from, so a
+			// wrong ?baseUrl is obvious before the first run.
+			// ---------------------------------------------------------------------------
+			const refreshAssetsBadge = () => {
+				try {
+					const resolved = resolveAssetBaseUrl();
+					els.assets.textContent = new URL(resolved).host;
+					els.assets.title = `toolchain assets: ${resolved}`;
+					els.assets.className = 'badge full';
+				} catch (error) {
+					els.assets.textContent = 'invalid baseUrl';
+					els.assets.title = error.message;
+					els.assets.className = 'badge error';
+				}
 			};
 
+			// ---------------------------------------------------------------------------
+			// Runtime. Heavy (~29 MB of assets, a 44 MB Wasm module), so build it once and
+			// reuse it. Switching asset sets tears it down.
+			// ---------------------------------------------------------------------------
 			let compilerOutput = [];
 			let runtimePromise = null;
-			let provenance = '';
 
-			// The runtime is heavy (~28 MB of assets, ~44 MB Wasm module), so build it once
-			// and reuse it for every subsequent compile.
+			const drainCompilerOutput = () => {
+				const text = compilerOutput.join('');
+				compilerOutput = [];
+				return text;
+			};
+
+			const resetRuntime = () => {
+				runtimePromise = null;
+			};
+
 			const getRuntime = () => {
 				if (runtimePromise) return runtimePromise;
 				runtimePromise = (async () => {
@@ -348,22 +519,31 @@ int main(void) {
 					// Yields to the browser so the progress bar can paint.
 					await runtime.ready;
 					const info = manifest.compiler?.provenance;
-					if (info) provenance = `${info.name} ${info.version}`;
-					append(
-						`Toolchain ready${provenance ? ` (${provenance}, ${manifest.version})` : ''}.\n`,
-						'sys'
-					);
+					const label = info ? `${info.name} ${info.version}` : 'toolchain';
+					append(`Toolchain ready (${label}, ${manifest.version}).\n`, 'sys');
 					return runtime;
 				})().catch((error) => {
 					runtimePromise = null;
-					throw error;
+					const baseUrl = (() => {
+						try {
+							return resolveAssetBaseUrl();
+						} catch {
+							return RUNTIME_BASE_URL;
+						}
+					})();
+					throw new Error(
+						`Could not load the toolchain from ${baseUrl}\n` +
+							`  ${error?.message ?? error}\n` +
+							`The rebuilt toolchain must be hosted somewhere reachable. Either:\n` +
+							`  - serve it from this origin:  npm run build:memfs && npm run build:sysroot (see README)\n` +
+							`  - or point at your own CDN:    ?baseUrl=https://cdn.example.com/clang/`
+					);
 				});
 				return runtimePromise;
 			};
 
 			const renderDiagnostics = () => {
-				const text = stripAnsi(compilerOutput.join(''));
-				compilerOutput = [];
+				const text = stripAnsi(drainCompilerOutput());
 				if (!text.trim()) return false;
 				for (const line of text.split(/\r?\n/)) {
 					if (!line) continue;
@@ -380,6 +560,7 @@ int main(void) {
 			const run = async () => {
 				const language = els.language.value;
 				const fileName = language === 'C' ? 'main.c' : 'main.cpp';
+				const standard = els.standard.value;
 
 				els.run.disabled = true;
 				els.output.textContent = '';
@@ -397,7 +578,7 @@ int main(void) {
 					const artifact = await runtime.compileArtifact(els.code.value, {
 						language,
 						fileName,
-						compileArgs: parseArgs(els.cflags.value)
+						compileArgs: [...(standard ? ['-std=' + standard] : []), ...parseArgs(els.cflags.value)]
 					});
 					const compileMs = Math.round(performance.now() - compileStart);
 					renderDiagnostics();
@@ -433,25 +614,65 @@ int main(void) {
 				}
 			};
 
-			const syncLanguage = () => {
-				const language = els.language.value;
-				els.filename.textContent = language === 'C' ? 'main.c' : 'main.cpp';
-				els.code.value = SAMPLES[language];
-			};
-
-			// Show which asset host is in play — a bad ?baseUrl is then obvious before the first run.
-			try {
-				const resolved = resolveAssetBaseUrl();
-				els.assets.textContent = `assets: ${new URL(resolved).host}`;
-				els.assets.title = resolved;
-			} catch (error) {
-				els.assets.textContent = 'assets: invalid baseUrl';
-				els.assets.title = error.message;
-				els.assets.classList.add('error');
+			// stdin provider: hands the whole buffer over once, then signals EOF with null.
+			function makeStdin(text) {
+				if (!text) return () => null;
+				let sent = false;
+				return () => {
+					if (sent) return null;
+					sent = true;
+					return text;
+				};
 			}
 
-			els.code.value = SAMPLES.CPP;
-			els.language.addEventListener('change', syncLanguage);
+			// ---------------------------------------------------------------------------
+			// UI wiring
+			// ---------------------------------------------------------------------------
+			const fillSelect = (select, options) => {
+				select.textContent = '';
+				for (const [value, label] of options) {
+					const option = document.createElement('option');
+					option.value = value;
+					option.textContent = label;
+					select.append(option);
+				}
+			};
+
+			const syncStandards = () => {
+				const previous = els.standard.value;
+				fillSelect(els.standard, STANDARDS[els.language.value]);
+				if ([...els.standard.options].some((o) => o.value === previous)) {
+					els.standard.value = previous;
+				}
+				els.filename.textContent = els.language.value === 'C' ? 'main.c' : 'main.cpp';
+			};
+
+			const loadExample = (key) => {
+				const example = EXAMPLES[key];
+				if (!example) return;
+				els.language.value = example.language;
+				fillSelect(els.standard, STANDARDS[example.language]);
+				els.standard.value = example.standard;
+				els.filename.textContent = example.language === 'C' ? 'main.c' : 'main.cpp';
+				els.code.value = example.code;
+				els.output.textContent = '';
+				els.timing.textContent = '';
+				setStatus('idle');
+			};
+
+			fillSelect(
+				els.example,
+				Object.entries(EXAMPLES).map(([key, value]) => [key, value.label])
+			);
+
+			els.language.addEventListener('change', () => {
+				syncStandards();
+				loadExample(els.language.value === 'C' ? 'c' : 'basics');
+			});
+			els.standard.addEventListener('change', () => {
+				els.timing.textContent = '';
+			});
+			els.example.addEventListener('change', () => loadExample(els.example.value));
 			els.run.addEventListener('click', run);
 			els.clear.addEventListener('click', () => {
 				els.output.textContent = '';
@@ -463,7 +684,13 @@ int main(void) {
 					run();
 				}
 			});
-			window.demo = { run, getRuntime, baseUrl: RUNTIME_BASE_URL };
+
+			syncStandards();
+			refreshAssetsBadge();
+			loadExample('basics');
+			els.stdin.value = '5 3 9 1 4';
+
+			window.demo = { run, getRuntime, drainCompilerOutput, resetRuntime, baseUrl: RUNTIME_BASE_URL };
 		</script>
 	</body>
 </html>

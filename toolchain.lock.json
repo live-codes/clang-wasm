@@ -1,0 +1,63 @@
+{
+  "$comment": "Pinned inputs for the Clang-WASM toolchain. Verify with `node build-memfs.mjs --verify-only`.",
+  "memfs": {
+    "source": "https://github.com/binji/llvm-project/tree/master/binji",
+    "discoveredVia": "binji/wasm-clang README -> 'https://github.com/binji/llvm-project/tree/master/binji'",
+    "why": "The memfs blob in binji/wasm-clang is byte-identical (345,442 bytes) to the one shipped by @chriskoch/cpp-wasm and @wasm-idle/llvm-core, so this is the published module's source.",
+    "license": {
+      "file": "none",
+      "repo": "Apache-2.0",
+      "note": "memfs.c carries no per-file license header. Containing repos: binji/wasm-clang is Apache-2.0; binji/llvm-project is Apache-2.0 WITH LLVM-exception. stb_sprintf.h is stb (public domain / MIT). We modify memfs.c, so Apache-2.0 section 4(b) applies: ship a notice that the file was changed. Confirm with the author before relying on this, since the file itself is unmarked."
+    },
+    "files": {
+      "memfs.c": "sha256:10e73c8a1cad2ed8da0eb9095253b1477b06a218ab90cab4337988816468ba8b",
+      "stb_sprintf.h": "sha256:2f985eb41aae52d1853fe4f90693bb899305d734e04ecad9346356037873d3f7",
+      "Makefile": "sha256:c7cc94a866553f6cfc1a0b0d69a35dbe3617348336ccf28216ea981bc7e0e7da",
+      "imports.txt": "sha256:9df02710e96167ac0be79edf86548d16f81ac75f5f5a19a615bb7a4dedaec9d9"
+    },
+    "toolchain": {
+      "name": "wasi-sdk",
+      "version": "26.0",
+      "asset": "wasi-sdk-26.0-x86_64-windows.tar.gz",
+      "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-26/wasi-sdk-26.0-x86_64-windows.tar.gz",
+      "sha256": "dd624e5bfaefb26cbcedd5334f1fe70f1c588b5b1f3972ae3968e3e12c66a555",
+      "bytes": 542858794,
+      "clangVersion": "clang version 20.1.8 (https://github.com/llvm/llvm-project 87f0227cb60147a26a1eeb4fb06e3b505e9c7261)",
+      "llvmCommit": "87f0227cb60147a26a1eeb4fb06e3b505e9c7261",
+      "note": "Pin this version. memfs.c is 2020 code and the build relies on mechanical WASI renames; a future wasi-sdk may rename more. Re-run the feature verification when bumping."
+    },
+    "patches": [
+      { "what": "<wasi/core.h> -> <wasi/api.h>", "why": "header renamed ~2020" },
+      { "what": "MAX_NODES 1024 -> 4096", "why": "the capacity fix this rebuild exists for" },
+      { "what": "__WASI_E<X> -> __WASI_ERRNO_<X>", "why": "errno constants gained ERRNO_ infix (9 constants)" },
+      { "what": "__WASI_FDFLAG_* -> __WASI_FDFLAGS_*, __WASI_O_* -> __WASI_OFLAGS_*", "why": "flag constants pluralised (5 constants)" },
+      { "what": "__wasi_filestat_t st_* fields lose prefix; __wasi_prestat_t pr_type -> tag", "why": "struct fields renamed" },
+      { "what": "abort() -> __builtin_trap()", "why": "libc abort reaches __wasi_proc_exit, a wasi_snapshot_preview1 import the runtime does not satisfy" }
+    ],
+    "outputs": {
+      "memfs.wasm.gz": {
+        "sha256": "cbca9e27ceafbca840603a39fc71e4f83bfb085237c8eab84fd0401ac76806c7",
+        "bytes": 38702,
+        "nodes": 4096,
+        "usableNodes": 4091,
+        "measured": "drove the module directly; traps on node 4092"
+      }
+    }
+  },
+  "sysroot": {
+    "source": "https://github.com/llvm/llvm-project",
+    "tag": "llvmorg-22.1.0",
+    "libcppVersion": "220100",
+    "why": "The shipped sysroot reports _LIBCPP_VERSION 220100. At this tag all 825 shared files are byte-identical to it, so the sysroot is a pure prune with zero modifications.",
+    "license": "Apache-2.0 WITH LLVM-exception",
+    "mode": "full (--all, excludes __cxx03/)",
+    "outputs": {
+      "sysroot.tar.gz": {
+        "sha256": "71c0ca54a2153bba59b4a80f68d2030142cc78aad48e76c0b73493cf5078dd19",
+        "bytes": 5334358,
+        "restoredFiles": 279,
+        "nodeCost": 296
+      }
+    }
+  }
+}
