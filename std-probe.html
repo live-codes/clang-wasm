@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>standard matrix probe</title>
+		<style>
+			body { background: #14161a; color: #e6e9ef; font: 12px/1.45 ui-monospace, monospace; padding: 16px; }
+			h1 { font-size: 13px; }
+			pre { white-space: pre-wrap; }
+			.ok { color: #5fd39a; }
+			.bad { color: #ff8a8a; }
+		</style>
+	</head>
+	<body>
+		<h1 id="title">standard matrix probe</h1>
+		<pre id="log">starting…</pre>
+		<script type="module">
+			// Test harness: compiles a feature matrix at one -std and reports OK/FAIL per case.
+			//   /std-probe.html?std=c++23
+			// Kept out of index.html so the demo stays clean; the runtime here is on the main
+			// thread purely because a batch probe does not care about blocking.
+			globalThis.SharedArrayBuffer ??= class SharedArrayBuffer {};
+
+			const params = new URLSearchParams(location.search);
+			const MODE = params.get('std') || 'c++23';
+			const BASE = params.get('baseUrl') || '/clang/';
+			const MODULE = params.get('module') || 'https://esm.sh/@wasm-idle/llvm-core@1.0.0/clang';
+
+			document.getElementById('title').textContent = 'feature matrix @ -std=' + MODE;
+
+			const CASES = [
+				{ n: 'baseline iostream+vector+algorithm', c: '#include <iostream>\n#include <vector>\n#include <algorithm>\nint main(){ std::vector<int> v{3,1,2}; std::sort(v.begin(),v.end()); for(int x:v) std::cout<<x; }\n' },
+				{ n: 'C++17 <optional>', c: '#include <optional>\nint main(){ std::optional<int> o=1; return o.value()-1; }\n' },
+				{ n: 'C++17 <variant>', c: '#include <variant>\nint main(){ std::variant<int,float> v=2; return std::get<0>(v)-2; }\n' },
+				{ n: 'C++17 <any>', c: '#include <any>\nint main(){ std::any a=5; return std::any_cast<int>(a)-5; }\n' },
+				{ n: 'C++17 <string_view>', c: '#include <string_view>\nint main(){ std::string_view s="hello"; return (int)s.substr(1,3).size()-3; }\n' },
+				{ n: 'C++17 std::clamp', c: '#include <algorithm>\nint main(){ return std::clamp(9,0,5)-5; }\n' },
+				{ n: 'C++17 <charconv>', c: '#include <charconv>\nint main(){ char b[16]; auto r=std::to_chars(b,b+16,42); return (int)(r.ptr-b)-2; }\n' },
+				{ n: 'C++17 <filesystem>', c: '#include <filesystem>\nint main(){ return (int)std::filesystem::path("/tmp").string().size()-4; }\n' },
+				{ n: 'C++11 <random> mt19937', c: '#include <random>\nint main(){ std::mt19937 g(1); return (g()>0)?0:1; }\n' },
+				{ n: 'C++11 <regex>', c: '#include <regex>\nint main(){ std::regex r("a+"); return std::regex_match("aaa",r)?0:1; }\n' },
+				{ n: 'C++11 <chrono>', c: '#include <chrono>\nint main(){ auto t=std::chrono::steady_clock::now(); return (t.time_since_epoch().count()>=0)?0:1; }\n' },
+				{ n: 'C++11 <thread>', c: '#include <thread>\nint main(){ return (int)std::thread::hardware_concurrency()*0; }\n' },
+				{ n: 'C++11 <typeindex>', c: '#include <typeindex>\n#include <typeinfo>\nint main(){ return (std::type_index(typeid(int))==std::type_index(typeid(int)))?0:1; }\n' },
+				{ n: 'C++17 <optional> structured bind', c: 'struct P{int a;int b;};\nint main(){ auto [x,y]=P{1,2}; return x+y-3; }\n' },
+				{ n: 'C++17 if constexpr', c: 'template<class T> int f(){ if constexpr (sizeof(T)==4) return 4; else return 8; }\nint main(){ return f<int>()-4; }\n' },
+				{ n: 'C++20 <span>', c: '#include <span>\nint main(){ int a[3]={1,2,3}; std::span<int> s(a); return (int)s.size()-3; }\n' },
+				{ n: 'C++20 <ranges> views', c: '#include <ranges>\n#include <vector>\nint main(){ std::vector<int> v{1,2,3,4}; int t=0; for(int x: v|std::views::filter([](int i){return i%2==0;})) t+=x; return t-6; }\n' },
+				{ n: 'C++20 <concepts>', c: '#include <concepts>\ntemplate<std::integral T> int f(T v){ return (int)v; }\nint main(){ return f(3)-3; }\n' },
+				{ n: 'C++20 <format>', c: '#include <format>\nint main(){ return (int)std::format("{}-{}",1,2).size()-3; }\n' },
+				{ n: 'C++20 <bit> popcount', c: '#include <bit>\nint main(){ return (int)std::popcount(0b101101u)-4; }\n' },
+				{ n: 'C++20 <source_location>', c: '#include <source_location>\nint main(){ return (std::source_location::current().line()>0)?0:1; }\n' },
+				{ n: 'C++20 <numbers>', c: '#include <numbers>\nint main(){ return (std::numbers::pi>3.14)?0:1; }\n' },
+				{ n: 'C++20 constexpr <cmath>', c: '#include <cmath>\nconstexpr double r = std::sqrt(16.0);\nint main(){ return (r==4.0)?0:1; }\n' },
+				{ n: 'C++23 <expected>', c: '#include <expected>\nint main(){ std::expected<int,int> e=41; return *e-41; }\n' },
+				{ n: 'C++23 std::unexpected', c: '#include <expected>\nint main(){ std::expected<int,const char*> e=std::unexpected("no"); return (e.error()[0]==\'n\')?0:1; }\n' },
+				{ n: 'C++23 <print> println', c: '#include <print>\nint main(){ std::println("x{}",1); }\n' },
+				{ n: 'C++23 std::byteswap', c: '#include <bit>\n#include <cstdint>\nint main(){ return (std::byteswap(std::uint16_t{0x1234})==0x3412)?0:1; }\n' },
+				{ n: 'C++23 std::to_underlying', c: '#include <utility>\nenum class E:int{A=3};\nint main(){ return std::to_underlying(E::A)-3; }\n' },
+				{ n: 'C++23 <mdspan>', c: '#include <mdspan>\nint main(){ int a[6]={}; std::mdspan<int,std::dextents<int,2>> m(a,2,3); return (int)m.extent(0)-2; }\n' },
+				{ n: 'C++23 <flat_map>', c: '#include <flat_map>\nint main(){ std::flat_map<int,int> m; m[1]=2; return m[1]-2; }\n' },
+				{ n: 'C++23 <stacktrace>', c: '#include <stacktrace>\nint main(){ return (std::stacktrace::current().size()>0)?0:1; }\n' },
+				{ n: 'C++23 views::zip', c: '#include <ranges>\n#include <vector>\nint main(){ std::vector<int> a{1,2}; std::vector<int> b{3,4}; int t=0; for(auto [x,y]: std::views::zip(a,b)) t+=x+y; return t-10; }\n' },
+				{ n: 'C++23 if consteval', c: 'constexpr int f(int n){ if consteval { return n*2; } else { return n; } }\nint main(){ return f(21)-42; }\n' },
+				{ n: 'C++23 deducing this', c: 'struct S{ int v=7; template<class Self> int get(this Self&& s){ return s.v; } };\nint main(){ return S{}.get()-7; }\n' },
+				{ n: 'C++23 multi-subscript', c: 'struct M{ int operator[](int i,int j) const { return i*10+j; } };\nint main(){ return M{}[1,2]-12; }\n' },
+				{ n: 'C++23 auto(x) decay copy', c: '#include <vector>\nint main(){ int a[3]={1,2,3}; auto v=auto(a); return (int)v.size()-3; }\n' },
+				{ n: 'C++23 static operator()', c: 'struct F{ static int operator()(int x){ return x*2; } };\nint main(){ return F{}(21)-42; }\n' },
+				{ n: 'C++23 lambda in constexpr', c: 'constexpr int f(){ auto l=[](){ return 7; }; return l(); }\nint main(){ return f()-7; }\n' }
+			];
+
+			const log = document.getElementById('log');
+			const lines = [];
+			window.__std = 'RUNNING';
+			window.__prog = 0;
+
+			try {
+				const mod = await import(MODULE);
+				lines.push('loading toolchain from ' + BASE);
+				log.textContent = lines.join('\n');
+				const manifest = await mod.loadRuntimeManifest(mod.resolveRuntimeManifestUrl(BASE));
+				const runtime = new mod.BrowserClangRuntime({
+					runtimeBaseUrl: BASE,
+					manifest,
+					stdin: () => '',
+					stdout: (chunk) => {
+						window.__log = (window.__log || '') + chunk;
+					},
+					log: false
+				});
+				await runtime.ready;
+				window.__rt = runtime;
+				lines.push('toolchain ready');
+				log.textContent = lines.join('\n');
+
+				const results = [];
+				for (const test of CASES) {
+					let failed = false;
+					let captured = '';
+					try {
+						await runtime.compileArtifact(test.c, {
+							language: 'CPP',
+							fileName: 'p_' + test.n.replace(/[^a-z0-9]/gi, '_') + '.cpp',
+							compileArgs: ['-std=' + MODE]
+						});
+					} catch (error) {
+						failed = true;
+						captured = String(error && error.message);
+					}
+					// A failed compile can leave a previous artifact in memfs, which looks like
+					// success. Treat any "error:" in the toolchain output as a failure too.
+					if (/error:/i.test(captured)) failed = true;
+					results.push({ name: test.n, ok: !failed });
+					window.__prog = results.length;
+					log.innerHTML = lines.join('\n') + '\n\n' + results
+						.map((r) => `<span class="${r.ok ? 'ok' : 'bad'}">${r.ok ? 'OK  ' : 'FAIL'}</span>  ${r.name}`)
+						.join('\n');
+				}
+
+				const ok = results.filter((r) => r.ok).length;
+				window.__std = results.map((r) => (r.ok ? 'OK  ' : 'FAIL') + '  ' + r.name).join('\n') +
+					'\n\n' + ok + '/' + results.length + ' passed @ -std=' + MODE;
+				window.__failures = results.filter((r) => !r.ok).map((r) => r.name);
+			} catch (error) {
+				window.__std = 'FATAL: ' + String(error && error.message);
+			}
+		</script>
+	</body>
+</html>

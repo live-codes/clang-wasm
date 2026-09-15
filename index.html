@@ -132,8 +132,7 @@
 	<body>
 		<header>
 			<h1>C/C++ in the browser</h1>
-			<span class="sub">Clang 22.1.8 &rarr; WebAssembly &middot; @wasm-idle/llvm-core</span>
-			<span id="assets" class="badge" title="Compiler asset host"></span>
+			<span class="sub">Clang 22.1.8 &rarr; WebAssembly &middot; full libc++ &middot; C++23 &middot; Web Worker</span>
 			<span class="spacer"></span>
 			<div class="controls">
 				<span class="field">
@@ -214,7 +213,7 @@
 			// unconditionally, which throws "SharedArrayBuffer is not defined" on a page that is
 			// not cross-origin isolated. The ordinary (non-debug) path never creates a real one,
 			// so a stub keeps that branch from throwing and the page no longer needs COOP/COEP.
-			// Only the LLDB debug path needs real shared memory.
+			// Only the LLDB debug path needs real shared memory. The worker installs its own.
 			globalThis.SharedArrayBuffer ??= class SharedArrayBuffer {};
 
 			const resolveAssetBaseUrl = () => {
@@ -230,12 +229,31 @@
 				return url.href;
 			};
 
-			const {
-				BrowserClangRuntime,
-				executeBrowserClangArtifact,
-				loadRuntimeManifest,
-				resolveRuntimeManifestUrl
-			} = await import(LLVM_CORE_URL);
+			// ---------------------------------------------------------------------------
+			// The compiler runs in a Worker, not here. The runtime blocks whichever thread it
+			// is created on, and a compile takes seconds - on the main thread that freezes the
+			// page. LiveCodes runs its C/C++ compiler the same way.
+			// ---------------------------------------------------------------------------
+			const worker = new Worker('./worker.js', { type: 'module' });
+			let busy = false;
+
+			// The runtime forwards its own trace lines when logging is on (which the worker
+			// enables so link errors are visible). Those arrive interleaved with the real
+			// diagnostics, sometimes with the " done." tail on a separate line - strip both.
+			// eslint-disable-next-line no-control-regex
+			const stripAnsi = (text) => text.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
+			const stripRuntimeChatter = (text) =>
+				stripAnsi(text)
+					.replace(/[^\n]*>(?:\s*(?:Fetching and compiling|Untarring)\b)[^\n]*/g, '')
+					.replace(/^\s*done\.\s*$/gm, '')
+					.split(/\r?\n/)
+					.filter((line) => line.trim() && !line.trim().startsWith('>'))
+					.join('\n');
+
+			// Exceptions are not supported by this toolchain (nor by cpp-wasm's). The failure is
+			// an obscure link error, so say something useful up front.
+			const EXCEPTION_PATTERN = /\b(try|catch|throw)\b\s*[({]/;
+			const usesExceptions = (code) => EXCEPTION_PATTERN.test(code.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, ''));
 
 			// ---------------------------------------------------------------------------
 			// Examples. The first two run on either asset set; the C++23 and "full library"
@@ -245,7 +263,7 @@
 				basics: {
 					label: 'C++ — containers & algorithms',
 					language: 'CPP',
-					standard: '',
+					standard: 'gnu++23',
 					code: `#include <algorithm>
 #include <format>
 #include <iostream>
@@ -287,7 +305,7 @@ int main() {
 				ranges: {
 					label: 'C++20 — ranges & span',
 					language: 'CPP',
-					standard: 'c++20',
+					standard: 'gnu++20',
 					code: `// <ranges> and <span> are pruned from the upstream sysroot; the rebuild restores them.
 #include <iostream>
 #include <numbers>
@@ -318,7 +336,7 @@ int main() {
 				cxx23: {
 					label: 'C++23 — expected, print, charconv',
 					language: 'CPP',
-					standard: 'c++23',
+					standard: 'gnu++23',
 					code: `// C++23 mode needs __ostream/print.h, which is pruned from the upstream sysroot
 // (it breaks <iostream> under -std=c++23). The rebuild restores it.
 //
@@ -360,7 +378,7 @@ int main() {
 				blit: {
 					label: 'C++20 — <bit> (was broken)',
 					language: 'CPP',
-					standard: 'c++20',
+					standard: 'gnu++20',
 					code: `// <bit> is present upstream but its internal __bit/byteswap.h is pruned, so it
 // fails with "file not found". The rebuild restores it.
 #include <bit>
@@ -380,7 +398,7 @@ int main() {
 				c: {
 					label: 'C — qsort over stdin',
 					language: 'C',
-					standard: '',
+					standard: 'gnu17',
 					code: `#include <stdio.h>
 #include <stdlib.h>
 
@@ -405,22 +423,27 @@ int main(void) {
 				}
 			};
 
+			// gnu++ variants, to match what GCC and Clang do by default and to keep the explicit
+			// options consistent with each other. Passing -std=c++NN (strict) instead would
+			// silently reject GNU extensions the runtime's own default accepts.
+			//
+			// C++23 is the default: validated against a 38-case matrix, 35 passed and every case
+			// that passes at C++20 also passes here (see README).
 			const STANDARDS = {
 				CPP: [
-					['', 'default (C++20)'],
-					['c++11', 'C++11'],
-					['c++14', 'C++14'],
-					['c++17', 'C++17'],
-					['c++20', 'C++20'],
-					['c++23', 'C++23']
+					['gnu++11', 'C++11'],
+					['gnu++14', 'C++14'],
+					['gnu++17', 'C++17'],
+					['gnu++20', 'C++20'],
+					['gnu++23', 'C++23 (default)']
 				],
 				C: [
-					['', 'default (C11)'],
-					['c11', 'C11'],
-					['c17', 'C17'],
-					['c23', 'C23']
+					['gnu11', 'C11'],
+					['gnu17', 'C17 (default)'],
+					['gnu23', 'C23']
 				]
 			};
+			const DEFAULT_STANDARD = { CPP: 'gnu++23', C: 'gnu17' };
 
 			const els = {
 				code: document.getElementById('code'),
@@ -436,7 +459,6 @@ int main(void) {
 				output: document.getElementById('output'),
 				status: document.getElementById('status'),
 				timing: document.getElementById('timing'),
-				assets: document.getElementById('assets'),
 				progress: document.querySelector('#progress > div')
 			};
 
@@ -459,94 +481,18 @@ int main(void) {
 
 			const parseArgs = (value) => value.trim().split(/\s+/).filter(Boolean);
 
-			// The runtime always compiles with -fcolor-diagnostics, so clang's messages arrive
-			// wrapped in SGR escapes. Strip them before rendering (and before matching on them:
-			// the escapes otherwise break naive "error:" parsing).
-			// eslint-disable-next-line no-control-regex
-			const stripAnsi = (text) => text.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
-
 			// ---------------------------------------------------------------------------
-			// Asset source badge. Shows which host the toolchain is coming from, so a
-			// wrong ?baseUrl is obvious before the first run.
+			// Worker message handling. The runtime lives in worker.js; everything here is
+			// just rendering what it reports.
 			// ---------------------------------------------------------------------------
-			const refreshAssetsBadge = () => {
-				try {
-					const resolved = resolveAssetBaseUrl();
-					els.assets.textContent = new URL(resolved).host;
-					els.assets.title = `toolchain assets: ${resolved}`;
-					els.assets.className = 'badge full';
-				} catch (error) {
-					els.assets.textContent = 'invalid baseUrl';
-					els.assets.title = error.message;
-					els.assets.className = 'badge error';
-				}
-			};
+			let runState = null;
 
-			// ---------------------------------------------------------------------------
-			// Runtime. Heavy (~29 MB of assets, a 44 MB Wasm module), so build it once and
-			// reuse it. Switching asset sets tears it down.
-			// ---------------------------------------------------------------------------
-			let compilerOutput = [];
-			let runtimePromise = null;
-
-			const drainCompilerOutput = () => {
-				const text = compilerOutput.join('');
-				compilerOutput = [];
-				return text;
-			};
-
-			const resetRuntime = () => {
-				runtimePromise = null;
-			};
-
-			const getRuntime = () => {
-				if (runtimePromise) return runtimePromise;
-				runtimePromise = (async () => {
-					setStatus('loading toolchain…');
-					const baseUrl = resolveAssetBaseUrl();
-					append(`Loading Clang toolchain from ${baseUrl} (first run only, cached afterwards)…\n`, 'sys');
-					// The manifest matters: it supplies resourceDir (/lib/clang/22) and the
-					// wasi runtime lib dir. Without it the runtime falls back to /lib/clang/8.0.1
-					// and even <stddef.h> fails to resolve.
-					const manifest = await loadRuntimeManifest(resolveRuntimeManifestUrl(baseUrl));
-					const runtime = new BrowserClangRuntime({
-						runtimeBaseUrl: baseUrl,
-						manifest,
-						stdin: () => '',
-						stdout: (chunk) => compilerOutput.push(chunk),
-						progress: setProgress
-					});
-					// Yields to the browser so the progress bar can paint.
-					await runtime.ready;
-					const info = manifest.compiler?.provenance;
-					const label = info ? `${info.name} ${info.version}` : 'toolchain';
-					append(`Toolchain ready (${label}, ${manifest.version}).\n`, 'sys');
-					return runtime;
-				})().catch((error) => {
-					runtimePromise = null;
-					const baseUrl = (() => {
-						try {
-							return resolveAssetBaseUrl();
-						} catch {
-							return RUNTIME_BASE_URL;
-						}
-					})();
-					throw new Error(
-						`Could not load the toolchain from ${baseUrl}\n` +
-							`  ${error?.message ?? error}\n` +
-							`The rebuilt toolchain must be hosted somewhere reachable. Either:\n` +
-							`  - serve it from this origin:  npm run build:memfs && npm run build:sysroot (see README)\n` +
-							`  - or point at your own CDN:    ?baseUrl=https://cdn.example.com/clang/`
-					);
-				});
-				return runtimePromise;
-			};
-
-			const renderDiagnostics = () => {
-				const text = stripAnsi(drainCompilerOutput());
-				if (!text.trim()) return false;
+			const renderCompilerOutput = (raw) => {
+				const text = stripRuntimeChatter(raw ?? '');
+				let shown = false;
 				for (const line of text.split(/\r?\n/)) {
-					if (!line) continue;
+					if (!line.trim()) continue;
+					shown = true;
 					const klass = /:\s*(?:fatal )?error:/.test(line)
 						? 'err-line'
 						: /:\s*warning:/.test(line)
@@ -554,76 +500,129 @@ int main(void) {
 							: 'sys';
 					append(`${line}\n`, klass);
 				}
-				return true;
+				return shown;
 			};
 
-			const run = async () => {
-				const language = els.language.value;
-				const fileName = language === 'C' ? 'main.c' : 'main.cpp';
-				const standard = els.standard.value;
+			worker.addEventListener('message', (event) => {
+				const msg = event.data;
+				if (!msg || !runState) return;
 
+				switch (msg.type) {
+					case 'status':
+						setStatus(msg.text === 'ready' ? 'ready' : msg.text);
+						if (msg.text === 'ready') {
+							append('Toolchain ready (cached in the worker for later runs).\n', 'sys');
+							setProgress(0);
+						} else if (msg.text === 'loading toolchain…') {
+							append(`Loading the Clang toolchain (first run only)…\n`, 'sys');
+						} else if (msg.text === 'compiling…') {
+							setStatus('compiling…');
+						}
+						break;
+					case 'progress':
+						setProgress(msg.value);
+						break;
+					case 'compiled':
+						setProgress(0);
+						runState.compileMs = msg.compileMs;
+						if (msg.ok) {
+							renderCompilerOutput(msg.compilerOutput);
+							append('Compiled ok. Running…\n\n', 'sys');
+						} else {
+							// Link failures carry no file/line, so only show them if the compiler
+							// produced nothing itself.
+							if (!renderCompilerOutput(msg.compilerOutput)) append(`${msg.error}\n`, 'err');
+							runState.failed = true;
+							setStatus('failed', 'error');
+							append(
+								'\nThe compile or link failed. C++ exceptions (try/catch/throw) are not\n' +
+									'supported by this toolchain - neither is cpp-wasm.\n',
+								'warn'
+							);
+						}
+						break;
+					case 'stdout':
+						append(msg.text);
+						break;
+					case 'stderr':
+						append(msg.text, 'err');
+						break;
+					case 'done': {
+						const { compileMs, startedAt } = runState;
+						const totalMs = Math.round(performance.now() - startedAt);
+						append(
+							`\n[exit ${msg.exitCode ?? 0}]  compiled in ${compileMs ?? '?'} ms, ran in ${msg.runMs} ms, ` +
+								`artifact ${(msg.artifactBytes / 1024).toFixed(1)} KiB  (${totalMs} ms total, off the main thread)\n`,
+							msg.exitCode ? 'err' : 'ok'
+						);
+						els.timing.textContent = `compile ${compileMs ?? '?'} ms · run ${msg.runMs} ms`;
+						setStatus(msg.exitCode ? `exit ${msg.exitCode}` : 'done', msg.exitCode ? 'error' : 'ready');
+						finishRun();
+						break;
+					}
+					case 'error':
+						append(`\n${msg.message}\n`, 'err');
+						setStatus('failed', 'error');
+						finishRun();
+						break;
+				}
+			});
+
+			worker.addEventListener('error', (event) => {
+				append(`\nWorker error: ${event.message}\n`, 'err');
+				setStatus('failed', 'error');
+				finishRun();
+			});
+
+			const finishRun = () => {
+				runState = null;
+				busy = false;
+				els.run.disabled = false;
+				setProgress(0);
+			};
+
+			const run = () => {
+				if (busy) return;
+
+				const language = els.language.value;
+				const standard = els.standard.value;
+				let baseUrl;
+				try {
+					baseUrl = resolveAssetBaseUrl();
+				} catch (error) {
+					els.output.textContent = '';
+					append(`${error.message}\n`, 'err');
+					setStatus('invalid baseUrl', 'error');
+					return;
+				}
+
+				busy = true;
 				els.run.disabled = true;
 				els.output.textContent = '';
 				els.timing.textContent = '';
-				compilerOutput = [];
+				setStatus('starting…');
+				runState = { startedAt: performance.now(), compileMs: null };
 
-				try {
-					const runtime = await getRuntime();
-					setProgress(0);
-
-					// Compiling and linking block the main thread — it is one Wasm instance, not a worker.
-					setStatus('compiling…');
-					await new Promise((resolve) => setTimeout(resolve, 0));
-					const compileStart = performance.now();
-					const artifact = await runtime.compileArtifact(els.code.value, {
-						language,
-						fileName,
-						compileArgs: [...(standard ? ['-std=' + standard] : []), ...parseArgs(els.cflags.value)]
-					});
-					const compileMs = Math.round(performance.now() - compileStart);
-					renderDiagnostics();
-
-					append('Compiled ok. Running…\n\n', 'sys');
-					setStatus('running…');
-					const runStart = performance.now();
-					const result = await executeBrowserClangArtifact(artifact, {
-						args: parseArgs(els.args.value),
-						stdin: makeStdin(els.stdin.value),
-						stdout: (chunk) => append(chunk),
-						stderr: (chunk) => append(chunk, 'err')
-					});
-					const runMs = Math.round(performance.now() - runStart);
-
+				if (usesExceptions(els.code.value)) {
 					append(
-						`\n[exit ${result.exitCode ?? 0}]  compiled in ${compileMs} ms, ran in ${runMs} ms, artifact ${(
-							artifact.bytes.byteLength / 1024
-						).toFixed(1)} KiB\n`,
-						result.exitCode ? 'err' : 'ok'
+						'Note: this source uses try/catch/throw. C++ exceptions are not supported by\n' +
+							'this toolchain (cpp-wasm has the same limitation), so it will fail to link.\n\n',
+						'warn'
 					);
-					els.timing.textContent = `compile ${compileMs} ms · run ${runMs} ms`;
-					setStatus(result.exitCode ? `exit ${result.exitCode}` : 'done', result.exitCode ? 'error' : 'ready');
-				} catch (error) {
-					// Compile failures surface as a throw; clang's own messages are in the captured output.
-					if (!renderDiagnostics()) append(`${error?.message ?? error}\n`, 'err');
-					else append(`\n${error?.message ?? error}\n`, 'err');
-					setStatus('failed', 'error');
-					els.timing.textContent = '';
-				} finally {
-					els.run.disabled = false;
-					setProgress(0);
 				}
-			};
 
-			// stdin provider: hands the whole buffer over once, then signals EOF with null.
-			function makeStdin(text) {
-				if (!text) return () => null;
-				let sent = false;
-				return () => {
-					if (sent) return null;
-					sent = true;
-					return text;
-				};
-			}
+				worker.postMessage({
+					type: 'run',
+					moduleUrl: LLVM_CORE_URL,
+					baseUrl,
+					code: els.code.value,
+					language,
+					fileName: language === 'C' ? 'main.c' : 'main.cpp',
+					compileArgs: [...(standard ? ['-std=' + standard] : []), ...parseArgs(els.cflags.value)],
+					args: parseArgs(els.args.value),
+					stdin: els.stdin.value
+				});
+			};
 
 			// ---------------------------------------------------------------------------
 			// UI wiring
@@ -639,11 +638,8 @@ int main(void) {
 			};
 
 			const syncStandards = () => {
-				const previous = els.standard.value;
 				fillSelect(els.standard, STANDARDS[els.language.value]);
-				if ([...els.standard.options].some((o) => o.value === previous)) {
-					els.standard.value = previous;
-				}
+				els.standard.value = DEFAULT_STANDARD[els.language.value];
 				els.filename.textContent = els.language.value === 'C' ? 'main.c' : 'main.cpp';
 			};
 
@@ -686,11 +682,10 @@ int main(void) {
 			});
 
 			syncStandards();
-			refreshAssetsBadge();
 			loadExample('basics');
 			els.stdin.value = '5 3 9 1 4';
 
-			window.demo = { run, getRuntime, drainCompilerOutput, resetRuntime, baseUrl: RUNTIME_BASE_URL };
+			window.demo = { run, baseUrl: RUNTIME_BASE_URL, worker };
 		</script>
 	</body>
 </html>

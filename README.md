@@ -27,13 +27,62 @@ The demo uses **only the rebuilt toolchain** (full libc++, rebuilt memfs). The u
 offered: it ships a pruned libc++ that cannot compile most of C++20/23, so serving it would just be a
 worse toolchain with no upside.
 
+Everything runs in a **Web Worker** (`worker.js`), the way LiveCodes runs its C/C++ compiler. The
+runtime blocks whichever thread it is created on and a compile takes seconds, so the page would
+otherwise freeze. Measured during a 4.6 s `<ranges>` compile:
+
+```
+ticks in 5s window = 250 (a 20 ms interval, so ~unblocked) | maxIntervalGap = 28 ms
+```
+
+Compare that with the main-thread version, where the same compile produced a single multi-second gap.
+
 | Control | What it does |
 | --- | --- |
-| **Lang** | C++ or C — switches the standard list and the example |
-| **Std** | `default` / C++11 … **C++23** (C: `default` / C11 / C17 / C23). Prepended as `-std=`, so the extra Compile args can still override it |
+| **Lang** | C++ or C — switches the standard list, the default and the example |
+| **Std** | `gnu++11` … **`gnu++23`** (default), or `gnu11` / **`gnu17`** (default) / `gnu23`. Prepended as `-std=`, so the extra Compile args can still override it |
 | **Example** | Four C++ samples plus one C sample — see below |
 | **Compile args** | Extra clang flags, e.g. `-Wall -O2` |
 | **Program args / stdin** | argv and stdin for the compiled program |
+
+Standards are `gnu++NN`, not `c++NN`: that matches what GCC and Clang do by default, and keeps the
+explicit options consistent with each other. Passing strict `-std=c++NN` would silently reject GNU
+extensions that `gnu++NN` accepts.
+
+### Why C++23 is the default
+
+Validated with a 38-case matrix (`std-probe.html`, run at each standard against the rebuilt
+toolchain):
+
+| Standard | Result |
+| --- | --- |
+| `c++20` | **25/38** — every C++23 feature fails |
+| `c++23` | **35/38** |
+| `gnu++23` | **35/38** — identical to `c++23` |
+
+**Every case that passes at C++20 also passes at C++23** — it is a strict superset, so promoting the
+default costs nothing and unlocks 10 more features (`expected`, `unexpected`, `print`/`println`,
+`byteswap`, `to_underlying`, `mdspan`, `flat_map`, `views::zip`, deducing `this`, multi-subscript,
+`auto(x)` decay copy).
+
+The 3 failures are all real but none are standard-related:
+
+- **`<stacktrace>`** — the header does not exist in libc++ 22 at all (checked the source tree). It
+  fails at every standard, and is a long-standing libc++ gap.
+- **`constexpr std::sqrt`** — `error: constexpr variable 'r' must be initialized by a constant
+  expression`. libc++ defines `__cpp_lib_constexpr_cmath` but the implementation is not usable in a
+  constant expression here.
+- **`auto(x)`** — my original test case was wrong (it called `.size()` on the decayed pointer). It
+  works; corrected cases pass.
+
+Reproduce:
+
+```
+http://localhost:4173/std-probe.html?std=gnu%2B%2B23     # or c%2B%2B20 for the baseline
+```
+
+For C, `gnu11` / `gnu17` / `gnu23` all compile basic programs; only `<stdbit.h>` (C23) is absent,
+which comes from wasi-libc rather than the rebuilt libc++.
 
 The toolchain has to be hosted somewhere reachable. Precedence:
 
@@ -57,8 +106,8 @@ bin/sysroot.tar.gz     <- rebuilt (full libc++)
 
 `serve.mjs` serves the two rebuilt files from `dist/` and proxies the other three from upstream once,
 caching them in `.asset-cache/`. It **refuses to serve the upstream memfs/sysroot**, so an unbuilt
-`dist/` produces a clear error rather than a silent downgrade to the pruned toolchain. The active host
-is shown next to the title, and if the assets can't be reached the output pane says which URL failed
+`dist/` produces a clear error rather than a silent downgrade to the pruned toolchain. If the assets
+can't be reached the output pane says which URL failed
 and how to fix it rather than hanging.
 
 To deploy: build the two files, copy all five to a static host / CDN, verify them against
@@ -74,11 +123,48 @@ The examples:
 | C++20 — `<bit>` (was broken) | `bit_cast`, `popcount`, `bit_ceil` — broken upstream |
 | C — qsort over stdin | C path, `scanf`/`qsort` |
 
-**Exceptions are disabled in this toolchain.** `try`/`catch` fails with *cannot use 'try' with
-exceptions disabled*, and `-fcxx-exceptions` does **not** reliably fix it — a throwing program with
-`<iostream>` still fails to compile, with no diagnostic text. Write non-throwing code (the C++23
-example uses `std::from_chars` for this reason). I have not confirmed whether `cpp-wasm` has the same
-limitation.
+**Exceptions are not supported — and I could not fix that.** `try`/`catch`/`throw` fail with
+*cannot use 'try' with exceptions disabled*. This is **not a regression**: `cpp-wasm` (the current
+LiveCodes toolchain) fails identically, verified with the same snippets in `cpp-wasm-probe.html`.
+
+I did get as far as compiling exception code. `compileArgs` are appended to the underlying `-cc1`
+invocation, so the driver-only flag `-fwasm-exceptions` is unavailable, but its cc1 expansion works:
+
+```
+-fexceptions -fcxx-exceptions -exception-model=wasm \
+    -target-feature +exception-handling -mllvm -wasm-enable-eh
+```
+
+With those, **codegen succeeds** and the failure moves to the link, which then names exactly what is
+missing:
+
+```
+wasm-ld: error: ex.o: undefined symbol: __cxa_allocate_exception
+wasm-ld: error: ex.o: undefined symbol: __cxa_throw
+wasm-ld: error: ex.o: undefined symbol: __cxa_begin_catch
+wasm-ld: error: ex.o: undefined symbol: __cxa_end_catch
+wasm-ld: error: ex.o: undefined symbol: __cxa_free_exception
+wasm-ld: error: ex.o: undefined symbol: __cpp_exception
+wasm-ld: error: ex.o: undefined symbol: __wasm_lpad_context
+wasm-ld: error: ex.o: undefined symbol: _Unwind_CallPersonality
+```
+
+Those come from **libc++abi and libunwind built with wasm exceptions** — and neither wasi-sdk 33 (the
+sysroot's source) nor wasi-sdk 26 ships them. I checked: both `libc++abi.a` files contain `__cxa_throw`
+only as the no-exceptions stub, and nothing else on the list. `libunwind/src/Unwind-wasm.c` provides
+`__wasm_lpad_context` and `_Unwind_CallPersonality`; `libcxxabi/src/cxa_exception.cpp` provides the
+`__cxa_*` set. `__config_site` does *not* set `_LIBCPP_HAS_NO_EXCEPTIONS`, so the headers are not the
+obstacle — the prebuilt libraries are.
+
+Making it work means building libc++abi **and** libunwind for wasm32-wasi with `-fwasm-exceptions`,
+plus defining the `__cpp_exception` tag, and swapping them into the sysroot. That is a real toolchain
+build (and this machine has no cmake/ninja). I did not attempt it: it would produce an unvalidated
+unwinder to fix something that is not currently working for LiveCodes either. Worth doing only if
+exceptions are a priority for users.
+
+What the demo does instead: it detects `try`/`catch`/`throw` in the source and says so up front, and it
+now **surfaces link errors at all** (see the note about `log: true` below), so the failure is
+explained rather than being a bare `process exited with code 1`.
 
 ## Pointing at your own asset host
 
@@ -102,8 +188,8 @@ bin/sysroot.tar.gz
 ```
 
 `bin/` is taken from `manifest.compiler.*.asset`, and the manifest itself is resolved as
-`<baseUrl>/runtime-manifest.v1.json`, so a trailing slash is optional. The active host is shown next
-to the title, and an unparseable or non-http base URL is flagged there before you run anything.
+`<baseUrl>/runtime-manifest.v1.json`, so a trailing slash is optional. An unparseable or non-http base
+URL is reported when you run, before any asset is fetched.
 
 You do not need a second server for local work: `serve.mjs` serves `/clang/` from the same origin as
 the page, and the default base URL is relative. To exercise a remote host, pass one explicitly:
@@ -240,12 +326,12 @@ LiveCodes ships **two** C++ languages, and only one of them is a compiler.
 | Runtime | JSCPP — **JS interpreter** | Clang **8.0.1** → Wasm | Clang **22.1.8** → Wasm | Clang **22.1.8** → Wasm |
 | LLVM release | n/a | 2019 | 2026 | 2026 |
 | Package last published | — | **2022** | 2026-09 | — |
-| Default `-std` | n/a | none passed → `gnu++14` | `gnu++20` / `gnu11` | `gnu++20` / `gnu11` |
+| Default `-std` | n/a | none passed → `gnu++14` | `gnu++20` / `gnu11` | **`gnu++23`** / `gnu17` |
 | Usable standards | n/a | **C++14 only** | C++11 … C++20 | **C++11 … C++23** |
 | Compile flags exposed | — | no (argv hardcoded) | yes | yes |
 | Diagnostics | interpreter msgs | `Error: …` string | `file:line:col` + severity | `file:line:col` + severity |
 | libc++ coverage | n/a (interpreter) | 133 top-level headers, **mostly inert at C++14** | 91 headers | **full** (~1104) |
-| Runs in a Worker | yes | **yes** | no — main thread | no — main thread |
+| Runs in a Worker | yes | **yes** | no — main thread | **yes** (`worker.js`) |
 | COOP/COEP needed | no | no | no (with SAB stub) | no (with SAB stub) |
 | Assets on the wire | tiny | 19.2 MB | **28.7 MB** | 28.7 MB (+19 KB) |
 | Assets unpacked | tiny | 60.4 MB | 84.6 MB | 84.6 MB |
@@ -295,8 +381,14 @@ crashes the LLVM 8 backend. Counting headers is a poor proxy for what actually w
 - **memfs is shared.** wasm-idle uses the same blob for its Nim toolchain
   (`static/wasm-nim/clang/memfs.wasm.gz` is the same 18,974-byte file). A deployment should scope the
   new memfs to the C/C++ runtime rather than replacing it globally.
-- **Main thread.** The stock runtime blocks the UI for the whole compile. `cpp-wasm` already runs in a
-  Worker; llvm-core would need the same treatment, and I have **not** proven it works in a Worker.
+- **Worker execution is done, but only in this demo.** `worker.js` runs the toolchain off the main
+  thread (verified: 250 ticks / 28 ms max gap during a 4.6 s compile). Porting it into LiveCodes' own
+  sandbox worker is still unproven — the worker needs the asset fetches to be CORS-enabled just like
+  the page does.
+- **Exceptions are not supported.** `try`/`catch`/`throw` fails to compile; see above for the exact
+  missing symbols and why fixing it means rebuilding libc++abi and libunwind. `cpp-wasm` behaves the
+  same, so this is not a regression — but it is the single biggest functional gap, and I would check
+  user expectations on it before shipping.
 - **Heavy headers are slow.** `<ranges>`/`<span>` pull in a lot of template machinery — tens of seconds
   each in wasm, versus ~2.6 s for a plain `<iostream>` program. This is inherent to libc++, not to my
   build, but it is a user-visible change.
@@ -313,10 +405,10 @@ My verification is a **feature matrix plus manual runs**, not a test suite. Unte
 - Multi-file workspaces, and the trace/LLDB debug paths (LLDB uses a separate WAMR/LLDB asset set).
 - stdin/stdout edge cases beyond simple line input; EOF and large-input behaviour.
 - Memory pressure and long-running programs; the 4096-node memfs is not soak-tested.
-- Cancellation, concurrency (several playgrounds at once), and worker execution.
+- Cancellation and concurrency (several playgrounds at once). Worker execution itself is verified here.
 - Anything under the COOP/COEP-isolated mode the debug runtime wants.
-- Exceptions. They are disabled (see above); `-fcxx-exceptions` is not a reliable workaround, and I
-  did not determine whether that is a toolchain build choice or a libc++abi limitation.
+- Exceptions beyond establishing why they fail (see above) — I did not attempt the libc++abi /
+  libunwind build, so "how much work is it really" is unmeasured.
 
 ### Recommendation
 
@@ -331,8 +423,8 @@ deployment:
    same-origin hosting is for development.
 3. **Scope the new memfs to C/C++.** wasm-idle uses the same blob for its Nim toolchain; do not
    replace it globally.
-4. **Move compilation into a Worker.** It currently blocks the main thread, and `cpp-wasm` already runs
-   in one.
+4. **Port the Worker pattern.** `worker.js` here demonstrates it working end to end (250 ticks, 28 ms
+   max gap during a 4.6 s compile); wiring it into LiveCodes' own sandbox worker is the remaining step.
 5. **Ship it as a new language first**, not as a silent replacement — diff real user snippets against
    `cpp-wasm`, and check the exceptions question above before claiming parity.
 6. **Keep `cpp` (JSCPP) alone** — it is an interpreter for quick snippets, a different tool with a
