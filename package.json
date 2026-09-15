@@ -1,0 +1,16 @@
+{
+  "name": "clang-wasm-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Browser C/C++ playground using @wasm-idle/llvm-core (Clang 22.1.8 compiled to WebAssembly)",
+  "scripts": {
+    "start": "node serve.mjs",
+    "mirror": "node mirror.mjs",
+    "bundle": "esbuild vendor-entry.mjs --bundle --format=esm --outfile=vendor/llvm-core-clang.js"
+  },
+  "dependencies": {
+    "@wasm-idle/llvm-core": "^1.0.0",
+    "esbuild": "^0.25.0"
+  }
+}

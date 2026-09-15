@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>cpp-wasm 1.0.2 header probe</title>
+		<style>
+			body { background: #14161a; color: #e6e9ef; font: 13px/1.5 ui-monospace, monospace; padding: 20px; }
+			h1 { font-size: 14px; }
+			#log { white-space: pre-wrap; }
+		</style>
+	</head>
+	<body>
+		<h1>@chriskoch/cpp-wasm@1.0.2 — what actually compiles</h1>
+		<div id="log">loading shared.js…</div>
+		<script>
+			// Mirrors how LiveCodes loads it (lang-cpp-wasm-script.ts): fetch shared.js,
+			// rewrite the hardcoded CDN paths, run it, then drive window.CPP.
+			const log = (text) => {
+				document.getElementById('log').textContent += text + '\n';
+			};
+
+			const HEADERS = [
+				'span', 'ranges', 'expected', 'format', 'print', 'bit', 'optional', 'variant',
+				'concepts', 'compare', 'source_location', 'numbers', 'mdspan', 'charconv',
+				'filesystem', 'regex', 'coroutine', 'thread', 'chrono', 'random', 'any',
+				'string_view', 'version', 'ctime', 'iostream', 'algorithm', 'numeric'
+			];
+
+			// "Header present" is not the same as "usable". These exercise the feature.
+			const RUNTIME_CASES = [
+				{ name: 'std::optional (C++17)', code: '#include <optional>\n#include <iostream>\nint main(){ std::optional<int> o = 7; std::cout << (o.has_value()?"y":"n") << "\\n"; }\n' },
+				{ name: 'std::variant (C++17)', code: '#include <variant>\n#include <iostream>\nint main(){ std::variant<int,float> v = 3; std::cout << std::get<0>(v) << "\\n"; }\n' },
+				{ name: 'std::any (C++17)', code: '#include <any>\n#include <iostream>\nint main(){ std::any a = 5; std::cout << std::any_cast<int>(a) << "\\n"; }\n' },
+				{ name: 'std::to_chars (C++17)', code: '#include <charconv>\n#include <iostream>\n#include <cstring>\nint main(){ char b[16]; auto r = std::to_chars(b, b+16, 42); *r.ptr=0; std::cout << b << "\\n"; }\n' },
+				{ name: 'std::string_view (C++17)', code: '#include <string_view>\n#include <iostream>\nint main(){ std::string_view s = "hello"; std::cout << s.substr(1,3) << "\\n"; }\n' },
+				{ name: 'std::clamp (C++17)', code: '#include <algorithm>\n#include <iostream>\nint main(){ std::cout << std::clamp(9, 0, 5) << "\\n"; }\n' },
+				{ name: 'std::bit_cast (C++20)', code: '#include <bit>\n#include <iostream>\nint main(){ float f=1.0f; std::cout << std::bit_cast<unsigned>(f) << "\\n"; }\n' },
+				{ name: 'std::span (C++20)', code: '#include <span>\n#include <iostream>\nint main(){ int a[3]={1,2,3}; std::span<int> s(a); std::cout << s.size() << "\\n"; }\n' },
+				{ name: 'std::filesystem (C++17)', code: '#include <filesystem>\n#include <iostream>\nint main(){ std::filesystem::path p("/tmp"); std::cout << p.string() << "\\n"; }\n' },
+				{ name: 'std::regex (C++11)', code: '#include <regex>\n#include <iostream>\nint main(){ std::regex r("a+"); std::cout << std::regex_match("aaa", r) << "\\n"; }\n' },
+				{ name: 'std::thread (C++11)', code: '#include <thread>\n#include <iostream>\nint main(){ std::cout << (std::thread::hardware_concurrency()>0?"y":"n") << "\\n"; }\n' },
+				{ name: 'std::chrono::steady_clock (C++11)', code: '#include <chrono>\n#include <iostream>\nint main(){ auto t = std::chrono::steady_clock::now(); std::cout << (t.time_since_epoch().count()>=0) << "\\n"; }\n' },
+				{ name: 'std::mt19937 (C++11)', code: '#include <random>\n#include <iostream>\nint main(){ std::mt19937 g(1); std::cout << (g()>0) << "\\n"; }\n' },
+				{ name: 'C++20 designated init', code: 'struct P{int x;int y;}; int main(){ P p{.x=1,.y=2}; return p.x+p.y==3?0:1; }\n' },
+				{ name: 'C++17 if constexpr', code: 'template<class T> int f(){ if constexpr (sizeof(T)==4) return 4; else return 8; } int main(){ return f<int>()-4; }\n' },
+				{ name: 'C++20 concepts', code: '#include <concepts>\ntemplate<std::integral T> int f(T v){ return (int)v; } int main(){ return f(3)-3; }\n' },
+				{ name: 'std::cout << __cplusplus', code: '#include <iostream>\nint main(){ std::cout << __cplusplus << "\\n"; }\n' }
+			];
+
+			window.PROBE = { ready: false, headerResults: [], runtimeResults: [] };
+
+			(async () => {
+				const res = await fetch('https://cdn.jsdelivr.net/npm/@chriskoch/cpp-wasm@1.0.2/shared.js');
+				const source = await res.text();
+				log(`shared.js: ${res.status}, ${source.length} bytes`);
+
+				// Same rewrite LiveCodes performs, but staying on jsDelivr.
+				const patched = source
+					.replace('https://cdn.jsdelivr.net/npm/@chriskoch/cpp-wasm@1.0.1/', 'https://cdn.jsdelivr.net/npm/@chriskoch/cpp-wasm@1.0.2/')
+					.replace('https://cdn.jsdelivr.net/npm/@chriskoch/cpp-wasm/memfs', 'https://cdn.jsdelivr.net/npm/@chriskoch/cpp-wasm@1.0.2/memfs');
+
+				// eslint-disable-next-line no-eval
+				(0, eval)(patched);
+				log('evaluated; waiting for CPP_READY…');
+				await window.CPP_READY;
+				log('CPP_READY resolved\n');
+
+				const attempt = async (code) => {
+					window.CPP_OUTPUT = '';
+					try {
+						await window.CPP.compileLinkRun(code);
+						return { ok: true, output: window.CPP_OUTPUT || '' };
+					} catch (error) {
+						return { ok: false, output: window.CPP_OUTPUT || '', error: String(error && error.message) };
+					}
+				};
+
+				log('=== header availability (#include <h> + empty main) ===');
+				for (const header of HEADERS) {
+					const result = await attempt(`#include <${header}>\nint main(){return 0;}\n`);
+					window.PROBE.headerResults.push({ header, ok: result.ok });
+					const firstError = (result.output || result.error || '').split('\n').find((l) => /error/.test(l)) || '';
+					log(`${result.ok ? 'OK   ' : 'FAIL '} ${header}${result.ok ? '' : '  <- ' + firstError.trim().slice(0, 90)}`);
+				}
+
+				log('\n=== runtime cases ===');
+				for (const test of RUNTIME_CASES) {
+					const result = await attempt(test.code);
+					window.PROBE.runtimeResults.push({ name: test.name, ok: result.ok, output: result.output, error: result.error });
+					log(`${result.ok ? 'OK   ' : 'FAIL '} ${test.name}${result.ok ? '  -> ' + (result.output || '').trim().slice(0, 40) : '  <- ' + ((result.output || result.error || '').split('\n').find((l) => /error/.test(l)) || '').trim().slice(0, 90)}`);
+				}
+
+				window.PROBE.ready = true;
+				log('\nDONE');
+			})().catch((error) => {
+				log('FATAL: ' + error.message);
+				window.PROBE.fatal = String(error);
+				window.PROBE.ready = true;
+			});
+		</script>
+	</body>
+</html>

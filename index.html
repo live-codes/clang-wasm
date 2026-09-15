@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>C/C++ in the browser — Clang 22.1.8 via @wasm-idle/llvm-core</title>
+		<style>
+			:root {
+				--bg: #14161a;
+				--panel: #1c1f26;
+				--panel-2: #23272f;
+				--border: #31363f;
+				--fg: #e6e9ef;
+				--muted: #9aa4b2;
+				--accent: #6ea8fe;
+				--ok: #5fd39a;
+				--err: #ff8a8a;
+				--warn: #ffc46b;
+				--mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+			}
+			* { box-sizing: border-box; }
+			html, body { height: 100%; margin: 0; }
+			body {
+				background: var(--bg);
+				color: var(--fg);
+				font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+				display: flex;
+				flex-direction: column;
+			}
+			header {
+				display: flex;
+				align-items: center;
+				gap: 12px;
+				padding: 10px 16px;
+				border-bottom: 1px solid var(--border);
+				background: var(--panel);
+				flex-wrap: wrap;
+			}
+			header h1 { font-size: 14px; margin: 0; font-weight: 600; }
+			header .sub { color: var(--muted); font-size: 12px; }
+			.spacer { flex: 1; }
+			.controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+			button, select, input, textarea {
+				font-family: inherit;
+				font-size: 13px;
+				color: var(--fg);
+				background: var(--panel-2);
+				border: 1px solid var(--border);
+				border-radius: 6px;
+				padding: 6px 10px;
+			}
+			textarea { font-family: var(--mono); resize: none; }
+			button { cursor: pointer; }
+			button:hover:not(:disabled) { border-color: var(--accent); }
+			button:disabled { opacity: .55; cursor: progress; }
+			button.primary { background: var(--accent); border-color: var(--accent); color: #0d1117; font-weight: 600; }
+
+			main { flex: 1; display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
+			@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+			.pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+			.pane + .pane { border-left: 1px solid var(--border); }
+			.pane > h2 {
+				margin: 0;
+				padding: 8px 14px;
+				font-size: 11px;
+				text-transform: uppercase;
+				letter-spacing: .08em;
+				color: var(--muted);
+				border-bottom: 1px solid var(--border);
+				background: var(--panel);
+				display: flex;
+				gap: 8px;
+				align-items: center;
+			}
+			#code { flex: 1; border: 0; border-radius: 0; padding: 14px; tab-size: 4; }
+			#code:focus, #stdin:focus, #args:focus, #cflags:focus { outline: none; }
+
+			#output {
+				flex: 1;
+				margin: 0;
+				padding: 14px;
+				overflow: auto;
+				font-family: var(--mono);
+				font-size: 12.5px;
+				white-space: pre-wrap;
+				word-break: break-word;
+			}
+			#output .err { color: var(--err); }
+			#output .sys { color: var(--muted); }
+			#output .ok { color: var(--ok); }
+			#output .warn { color: var(--warn); }
+			#output .err-line { color: var(--err); font-weight: 600; }
+
+			.options {
+				display: grid;
+				grid-template-columns: auto 1fr;
+				gap: 6px 10px;
+				align-items: center;
+				padding: 10px 14px;
+				border-top: 1px solid var(--border);
+				background: var(--panel);
+				font-size: 12px;
+			}
+			.options label { color: var(--muted); }
+			.options textarea { height: 52px; width: 100%; }
+			.options input { width: 100%; }
+
+			.badge {
+				font-family: var(--mono);
+				font-size: 11px;
+				padding: 3px 8px;
+				border-radius: 999px;
+				border: 1px solid var(--border);
+				background: var(--panel-2);
+				color: var(--muted);
+			}
+			.badge.ready { color: var(--ok); border-color: #2d5f47; }
+			.badge.error { color: var(--err); border-color: #6b3030; }
+
+			#progress {
+				height: 3px;
+				background: var(--border);
+				overflow: hidden;
+				flex-basis: 100%;
+			}
+			#progress > div { height: 100%; width: 0; background: var(--accent); transition: width .12s linear; }
+		</style>
+	</head>
+	<body>
+		<header>
+			<h1>C/C++ in the browser</h1>
+			<span class="sub">Clang 22.1.8 &rarr; WebAssembly &middot; @wasm-idle/llvm-core</span>
+			<span id="assets" class="badge" title="Compiler asset host"></span>
+			<span class="spacer"></span>
+			<div class="controls">
+				<select id="language" title="Source language">
+					<option value="CPP" selected>C++</option>
+					<option value="C">C</option>
+				</select>
+				<button id="run" class="primary">Compile &amp; Run</button>
+				<button id="clear">Clear</button>
+				<span id="status" class="badge">idle</span>
+			</div>
+			<div id="progress"><div></div></div>
+		</header>
+
+		<main>
+			<section class="pane">
+				<h2>Source <span id="filename" class="badge">main.cpp</span></h2>
+				<textarea id="code" spellcheck="false"></textarea>
+				<div class="options">
+					<label for="cflags">Compile args</label>
+					<input id="cflags" value="" placeholder="e.g. -std=c++23 -Wall -O2" />
+					<label for="args">Program args</label>
+					<input id="args" value="" placeholder="e.g. --verbose hello" />
+					<label for="stdin">stdin</label>
+					<textarea id="stdin" spellcheck="false" placeholder="Feed lines to the program's stdin"></textarea>
+				</div>
+			</section>
+
+			<section class="pane">
+				<h2>Output <span id="timing" class="badge"></span></h2>
+				<pre id="output"></pre>
+			</section>
+		</main>
+
+		<script type="module">
+			// Swap this for a local bundle if you'd rather not depend on a CDN:
+			//   npm install && npm run bundle   ->   "./vendor/llvm-core-clang.js"
+			// The bundled path is selected with ?local=1.
+			const useLocalBundle = new URLSearchParams(location.search).has('local');
+			const LLVM_CORE_URL =
+				window.LLVM_CORE_URL ??
+				(useLocalBundle
+					? './vendor/llvm-core-clang.js'
+					: 'https://esm.sh/@wasm-idle/llvm-core@1.0.0/clang');
+
+			// The compiler toolchain lives on a static host (the package ships code only).
+			// Assets used: runtime-manifest.v1.json, bin/{memfs,clang,lld}.wasm.gz, bin/sysroot.tar.gz
+			//
+			// Point this at your own mirror without editing this file, via either:
+			//   ?baseUrl=https://cdn.example.com/clang/
+			//   window.RUNTIME_BASE_URL = 'https://cdn.example.com/clang/'   (set before this module runs)
+			const DEFAULT_RUNTIME_BASE_URL = 'https://seorii.page/wasm-idle/clang/';
+			const RUNTIME_BASE_URL =
+				new URLSearchParams(location.search).get('baseUrl') ||
+				window.RUNTIME_BASE_URL ||
+				DEFAULT_RUNTIME_BASE_URL;
+
+			const resolveAssetBaseUrl = () => {
+				let url;
+				try {
+					url = new URL(RUNTIME_BASE_URL, location.href);
+				} catch {
+					throw new Error(`baseUrl is not a valid URL: ${RUNTIME_BASE_URL}`);
+				}
+				if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+					throw new Error(`baseUrl must use http(s), got ${url.protocol}//`);
+				}
+				// normalizeBaseUrl() in the library appends the trailing slash.
+				return url.href;
+			};
+
+			// @wasm-idle/llvm-core's core/memory.js does `buf instanceof SharedArrayBuffer`
+			// unconditionally, which throws "SharedArrayBuffer is not defined" on a page that is
+			// not cross-origin isolated. The ordinary (non-debug) path never creates a real one,
+			// so a stub keeps that branch from throwing and the page no longer needs COOP/COEP.
+			// Only the LLDB debug path needs real shared memory.
+			globalThis.SharedArrayBuffer ??= class SharedArrayBuffer {};
+
+			const {
+				BrowserClangRuntime,
+				executeBrowserClangArtifact,
+				loadRuntimeManifest,
+				resolveRuntimeManifestUrl
+			} = await import(LLVM_CORE_URL);
+
+			const SAMPLES = {
+				CPP: `#include <algorithm>
+#include <iostream>
+#include <numeric>
+#include <sstream>
+#include <string>
+#include <vector>
+
+int main() {
+    std::cout << "clang " << __clang_version__ << "\\n";
+    std::cout << "__cplusplus = " << __cplusplus << "\\n";
+
+    std::vector<int> values;
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        std::istringstream stream(line);
+        for (int value; stream >> value;) values.push_back(value);
+    }
+
+    std::sort(values.begin(), values.end());
+    std::cout << "sorted:";
+    for (int value : values) std::cout << ' ' << value;
+    std::cout << "\\nsum = " << std::accumulate(values.begin(), values.end(), 0) << "\\n";
+    return 0;
+}
+`,
+				C: `#include <stdio.h>
+#include <stdlib.h>
+
+static int compare(const void *left, const void *right) {
+    return *(const int *)right - *(const int *)left;
+}
+
+int main(void) {
+    printf("clang %s\\n", __clang_version__);
+
+    int values[64];
+    int count = 0;
+    while (count < 64 && scanf("%d", &values[count]) == 1) count++;
+
+    qsort(values, (size_t)count, sizeof(int), compare);
+    printf("descending:");
+    for (int index = 0; index < count; index++) printf(" %d", values[index]);
+    printf("\\n");
+    return 0;
+}
+`
+			};
+
+			const els = {
+				code: document.getElementById('code'),
+				language: document.getElementById('language'),
+				filename: document.getElementById('filename'),
+				cflags: document.getElementById('cflags'),
+				args: document.getElementById('args'),
+				stdin: document.getElementById('stdin'),
+				run: document.getElementById('run'),
+				clear: document.getElementById('clear'),
+				output: document.getElementById('output'),
+				status: document.getElementById('status'),
+				timing: document.getElementById('timing'),
+				assets: document.getElementById('assets'),
+				progress: document.querySelector('#progress > div')
+			};
+
+			const append = (text, className) => {
+				const span = document.createElement('span');
+				if (className) span.className = className;
+				span.textContent = text;
+				els.output.append(span);
+				els.output.scrollTop = els.output.scrollHeight;
+			};
+
+			const setStatus = (text, className = '') => {
+				els.status.textContent = text;
+				els.status.className = `badge ${className}`;
+			};
+
+			const setProgress = (fraction) => {
+				els.progress.style.width = `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
+			};
+
+			const parseArgs = (value) =>
+				value
+					.trim()
+					.split(/\s+/)
+					.filter(Boolean);
+
+			// The runtime always compiles with -fcolor-diagnostics, so clang's messages arrive
+			// wrapped in SGR escapes. Strip them before rendering (and before matching on them:
+			// the escapes otherwise break naive "error:" parsing).
+			// eslint-disable-next-line no-control-regex
+			const stripAnsi = (text) => text.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
+
+			// stdin provider: hands the whole buffer over once, then signals EOF with null.
+			const makeStdin = (text) => {
+				if (!text) return () => null;
+				let sent = false;
+				return () => {
+					if (sent) return null;
+					sent = true;
+					return text;
+				};
+			};
+
+			let compilerOutput = [];
+			let runtimePromise = null;
+			let provenance = '';
+
+			// The runtime is heavy (~28 MB of assets, ~44 MB Wasm module), so build it once
+			// and reuse it for every subsequent compile.
+			const getRuntime = () => {
+				if (runtimePromise) return runtimePromise;
+				runtimePromise = (async () => {
+					setStatus('loading toolchain…');
+					const baseUrl = resolveAssetBaseUrl();
+					append(`Loading Clang toolchain from ${baseUrl} (first run only, cached afterwards)…\n`, 'sys');
+					// The manifest matters: it supplies resourceDir (/lib/clang/22) and the
+					// wasi runtime lib dir. Without it the runtime falls back to /lib/clang/8.0.1
+					// and even <stddef.h> fails to resolve.
+					const manifest = await loadRuntimeManifest(resolveRuntimeManifestUrl(baseUrl));
+					const runtime = new BrowserClangRuntime({
+						runtimeBaseUrl: baseUrl,
+						manifest,
+						stdin: () => '',
+						stdout: (chunk) => compilerOutput.push(chunk),
+						progress: setProgress
+					});
+					// Yields to the browser so the progress bar can paint.
+					await runtime.ready;
+					const info = manifest.compiler?.provenance;
+					if (info) provenance = `${info.name} ${info.version}`;
+					append(
+						`Toolchain ready${provenance ? ` (${provenance}, ${manifest.version})` : ''}.\n`,
+						'sys'
+					);
+					return runtime;
+				})().catch((error) => {
+					runtimePromise = null;
+					throw error;
+				});
+				return runtimePromise;
+			};
+
+			const renderDiagnostics = () => {
+				const text = stripAnsi(compilerOutput.join(''));
+				compilerOutput = [];
+				if (!text.trim()) return false;
+				for (const line of text.split(/\r?\n/)) {
+					if (!line) continue;
+					const klass = /:\s*(?:fatal )?error:/.test(line)
+						? 'err-line'
+						: /:\s*warning:/.test(line)
+							? 'warn'
+							: 'sys';
+					append(`${line}\n`, klass);
+				}
+				return true;
+			};
+
+			const run = async () => {
+				const language = els.language.value;
+				const fileName = language === 'C' ? 'main.c' : 'main.cpp';
+
+				els.run.disabled = true;
+				els.output.textContent = '';
+				els.timing.textContent = '';
+				compilerOutput = [];
+
+				try {
+					const runtime = await getRuntime();
+					setProgress(0);
+
+					// Compiling and linking block the main thread — it is one Wasm instance, not a worker.
+					setStatus('compiling…');
+					await new Promise((resolve) => setTimeout(resolve, 0));
+					const compileStart = performance.now();
+					const artifact = await runtime.compileArtifact(els.code.value, {
+						language,
+						fileName,
+						compileArgs: parseArgs(els.cflags.value)
+					});
+					const compileMs = Math.round(performance.now() - compileStart);
+					renderDiagnostics();
+
+					append('Compiled ok. Running…\n\n', 'sys');
+					setStatus('running…');
+					const runStart = performance.now();
+					const result = await executeBrowserClangArtifact(artifact, {
+						args: parseArgs(els.args.value),
+						stdin: makeStdin(els.stdin.value),
+						stdout: (chunk) => append(chunk),
+						stderr: (chunk) => append(chunk, 'err')
+					});
+					const runMs = Math.round(performance.now() - runStart);
+
+					append(
+						`\n[exit ${result.exitCode ?? 0}]  compiled in ${compileMs} ms, ran in ${runMs} ms, artifact ${(
+							artifact.bytes.byteLength / 1024
+						).toFixed(1)} KiB\n`,
+						result.exitCode ? 'err' : 'ok'
+					);
+					els.timing.textContent = `compile ${compileMs} ms · run ${runMs} ms`;
+					setStatus(result.exitCode ? `exit ${result.exitCode}` : 'done', result.exitCode ? 'error' : 'ready');
+				} catch (error) {
+					// Compile failures surface as a throw; clang's own messages are in the captured output.
+					if (!renderDiagnostics()) append(`${error?.message ?? error}\n`, 'err');
+					else append(`\n${error?.message ?? error}\n`, 'err');
+					setStatus('failed', 'error');
+					els.timing.textContent = '';
+				} finally {
+					els.run.disabled = false;
+					setProgress(0);
+				}
+			};
+
+			const syncLanguage = () => {
+				const language = els.language.value;
+				els.filename.textContent = language === 'C' ? 'main.c' : 'main.cpp';
+				els.code.value = SAMPLES[language];
+			};
+
+			// Show which asset host is in play — a bad ?baseUrl is then obvious before the first run.
+			try {
+				const resolved = resolveAssetBaseUrl();
+				els.assets.textContent = `assets: ${new URL(resolved).host}`;
+				els.assets.title = resolved;
+			} catch (error) {
+				els.assets.textContent = 'assets: invalid baseUrl';
+				els.assets.title = error.message;
+				els.assets.classList.add('error');
+			}
+
+			els.code.value = SAMPLES.CPP;
+			els.language.addEventListener('change', syncLanguage);
+			els.run.addEventListener('click', run);
+			els.clear.addEventListener('click', () => {
+				els.output.textContent = '';
+				els.timing.textContent = '';
+			});
+			els.code.addEventListener('keydown', (event) => {
+				if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+					event.preventDefault();
+					run();
+				}
+			});
+			window.demo = { run, getRuntime, baseUrl: RUNTIME_BASE_URL };
+		</script>
+	</body>
+</html>
