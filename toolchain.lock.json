@@ -60,6 +60,25 @@
       }
     }
   },
+  "hosted": {
+    "source": "https://seorii.page/wasm-idle/clang/",
+    "why": "The three compiler assets that are served rather than built here. They are copied into packages/clang-wasm/assets/ so the npm package needs no host of its own, and these receipts are what proves the copy is the one that was checked.",
+    "provenance": "Unlike memfs and the sysroot, which this repository builds, and the Objective-C runtime, whose receipts the wasm-idle app publishes, these three were measured from the mirror on 2026-09-17. The manifest is also pinned upstream in the app's clangAssetIntegrity.ts; clang.wasm.gz and lld.wasm.gz are not published with a receipt we can check against, so their hashes are trust-on-first-use. Re-measure and update them if the mirror is ever repointed.",
+    "assets": {
+      "runtime-manifest.v1.json": {
+        "bytes": 876,
+        "sha256": "1420808d0391ff2d8a2fdf2a9f6bbce8f728e06b1ed1651029ed80b226101444"
+      },
+      "bin/clang.wasm.gz": {
+        "bytes": 15721977,
+        "sha256": "b1174438d9a67b7ff11e623541b9a0572c024a9e798084b9b021dd9da2da0874"
+      },
+      "bin/lld.wasm.gz": {
+        "bytes": 7837837,
+        "sha256": "f842a9b5df3c6d326f0260bfd313c11c2e22bc8b8ae0387deede9a4af55779cd"
+      }
+    }
+  },
   "objectiveC": {
     "source": "https://seorii.page/wasm-idle/wasm-objectivec/",
     "discoveredVia": "@wasm-idle/llvm-core/objective-c declares the six asset names; the receipts are the ones its own app pins in its bundle (clangAssetIntegrity), and all six were re-verified byte-for-byte against these URLs.",
@@ -67,11 +86,12 @@
     "license": {
       "libobjc.a": "MIT (GNUstep libobjc2)",
       "headers.json": "MIT (GNUstep libobjc2 headers)",
-      "libgnustep-base.a": "LGPL-2.1-or-later (GNUstep Base) - note: linking it into a user program is the usual LGPL question, and it is only fetched when the source imports Foundation",
-      "libgnustep-base.o": "LGPL-2.1-or-later (GNUstep Base), not fetched by the runtime",
-      "foundation-headers.json": "LGPL-2.1-or-later (GNUstep Base headers)",
+      "libgnustep-base.a": "LGPL-2.1-or-later (GNUstep Base). Object code, so redistributing it triggers the corresponding-source obligation of LGPL sections 4 and 6 - the reason it is not in the npm package.",
+      "libgnustep-base.o": "LGPL-2.1-or-later (GNUstep Base), object code, and not fetched by the runtime either.",
+      "foundation-headers.json": "Mixed. 168 of its 262 files carry the GNUstep Base LGPL-2.1-or-later notice, with 'or any later version' and no linking exception; the rest are system and third-party headers bundled alongside. This one is source rather than object code, so redistributing it needs the licence text and the intact notices, not corresponding source.",
       "libffi.a": "MIT (libffi)"
     },
+    "licensing": "See THIRD-PARTY-NOTICES.md at the repository root for the full list and for the LGPL obligation that comes with keeping the GNUstep Base files in .asset-cache. The licence text itself is in LICENSES/LGPL-2.1.txt.",
     "delivery": "Three of the six are published only gzipped at <name>.gz; the loader retries that path and inflates it, verifying the decoded bytes. serve.mjs mirrors them so the uncompressed path works too, and re-serves them with content-encoding: gzip to keep the wire cost compressed.",
     "used": "Only libobjc.a and headers.json are fetched: they are the whole cost of plain Objective-C, 273503 bytes. The other four belong to the installer's Foundation path (GNUstep Base + libffi), which is not usable here - see README. The integrity map still has to carry all six, because the installer validates the receipt of every asset name it declares.",
     "wire": {
@@ -89,6 +109,22 @@
       "libgnustep-base.o": { "bytes": 13557664, "sha256": "4022983db158350fe82ccd8c6eaf1c9e1305ee9233a6d7e3f9d5508a4f937aa7" },
       "foundation-headers.json": { "bytes": 1581430, "sha256": "116eaafa65f0bf65d64bd4143abc5c00aea54de19fe4bf9e4cbe88965db9d719" },
       "libffi.a": { "bytes": 4966, "sha256": "dcdf2754536c93dcadca640a26fe4eb415ee58c15db7a53072e0f18f322e2cbd" }
+    }
+  },
+  "thirdPartySources": {
+    "why": "The .asset-cache mirror redistributes GNUstep Base (LGPL-2.1-or-later) in object-code form, so the corresponding source has to be available from the same place. These are the sources committed for that, and third-party-sources/README.md is the long version.",
+    "gnustep-base": {
+      "component": "GNUstep Base, the library behind .asset-cache/objective-c/libgnustep-base.a, libgnustep-base.o and foundation-headers.json",
+      "version": "1.31.1",
+      "howIdentified": "Read out of the artifacts, because nothing publishes it: GNUSTEP_BASE_VERSION 13101 with MAJOR 1 / MINOR 31 / SUBMINOR 1 in the shipped GNUstepBase/preface.h, corroborated by the '1.31' string and the clang_22.1.0-wasi-sdk marker inside libgnustep-base.a.",
+      "release": "https://github.com/gnustep/libs-base/releases/download/base-1_31_1/gnustep-base-1.31.1.tar.gz",
+      "tag": "base-1_31_1",
+      "file": "third-party-sources/gnustep-base-1.31.1.tar.gz",
+      "bytes": 3831129,
+      "sha256": "e7546f1c978a7c75b676953a360194a61e921cb45a4804497b4f346a460c545cd",
+      "configuredHeaders": "third-party-sources/gnustep-base-1.31.1-configured/ holds config.h, GSConfig.h, GNUstepBase/config.h, GNUstepBase/GSConfig.h and GNUstepBase/preface.h as built, taken from foundation-headers.json. The tarball has the .in templates for four of them.",
+      "match": "201 of the 262 headers in foundation-headers.json are byte-identical to Source/ or Headers/ in this tarball, 0 differ, 5 are configure-generated (shipped separately), and 56 are other projects' headers bundled alongside (libffi 3.6.0, the blocks runtime, libdispatch, curl, libc and system headers) - all permissive.",
+      "notIncluded": "wasm_llvm_foundation_support.o, the producer's own object inside libgnustep-base.a (1 of 219 members, symbols including GSWasmLlvmInitializeNSStringCluster), together with the exact configure flags and any patches. The wasm-llvm build repository is not public - it is named by @wasm-idle/llvm-core's README but appears on neither GitHub nor npm - so what is committed is the upstream corresponding source, not a byte-for-byte recipe for the archive."
     }
   }
 }

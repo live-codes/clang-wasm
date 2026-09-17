@@ -1,13 +1,12 @@
 # @live-codes/clang-wasm
 
 Run **C**, **C++**, **Objective-C** and **Objective-C++** through one API, on Clang 22 compiled to
-WebAssembly. No native toolchain, nothing to install beyond the package, and the same four result
-fields whichever language you pick.
+WebAssembly. No native toolchain, and no host to set up: the runtime assets ship inside the package.
 
 ```js
 import { createCompiler } from '@live-codes/clang-wasm';
 
-const compiler = await createCompiler('cpp', { baseUrl: 'https://cdn.example.com/clang/' });
+const compiler = await createCompiler('cpp');
 
 const { stdout, stderr, output, errors, exitCode } = await compiler.run(`
     #include <cstdio>
@@ -18,8 +17,19 @@ console.log(output);   // "hello\n" - stdout and stderr in the order the program
 console.log(exitCode); // 0
 ```
 
-Works in Node 20+ and in browsers. In a browser the package has to go through a bundler, because it
-imports `@wasm-idle/llvm-core` by name - the same as any other npm package.
+That is Node, where the packaged assets can be read off disk. **In a browser there is no filesystem**,
+so a page has to be given a URL - copy the assets into whatever serves your page and pass it:
+
+```bash
+npx @live-codes/clang-wasm-copy-assets public/clang
+```
+
+```js
+const compiler = await createCompiler('cpp', { baseUrl: new URL('/clang/', location.href) });
+```
+
+Either way the package is bundled like any other npm package, because it imports
+`@wasm-idle/llvm-core` by name.
 
 ## API
 
@@ -38,7 +48,7 @@ rather than at the first `run`.
 
 | Option | Meaning |
 | --- | --- |
-| `baseUrl` | **Required.** Where the runtime assets are served from. Absolute http(s); in a browser it may be relative to the page. |
+| `baseUrl` | Where the runtime assets are served from. **Optional in Node**, where omitting it uses the assets the package ships; required anywhere else, and absolute http(s) except in a browser, where it may be relative to the page. |
 | `objectiveCBaseUrl` | Where the Objective-C runtime is served from. Defaults to `objective-c/` under `baseUrl`. |
 | `std` | The standard to compile at, e.g. `'gnu++20'`. One of the values in the table above; anything else is rejected rather than passed through. `null` passes no `-std=` at all and leaves the compiler its own default. |
 | `compileArgs` | Extra clang flags, e.g. `['-Wall', '-O2']`. |
@@ -133,33 +143,61 @@ standardsFor('objcpp');    // ['gnu++11', 'gnu++14', 'gnu++17', 'gnu++20', 'gnu+
 
 ## Where the assets come from
 
-The package is code only. Point `baseUrl` at a directory laid out like this:
+The runtime ships inside the package, about 28 MB compressed, laid out as the runtime expects a base
+URL to be:
 
 ```
-runtime-manifest.v1.json
-bin/memfs.wasm.gz
-bin/clang.wasm.gz
-bin/lld.wasm.gz
-bin/sysroot.tar.gz
-objective-c/            <- only needed if you use Objective-C
-  libobjc.a
-  headers.json
+runtime-manifest.v1.json     876 B
+bin/memfs.wasm.gz             38 KB
+bin/clang.wasm.gz           15.0 MB
+bin/lld.wasm.gz              7.5 MB
+bin/sysroot.tar.gz           5.1 MB
+objective-c/                          <- only fetched if you use Objective-C
+  libobjc.a                  190 KB
+  headers.json                83 KB
 ```
 
-The parent repository's `serve.mjs` serves exactly this layout, including the Objective-C directory,
-which is why its tests can run the whole suite locally. Three of the six Objective-C assets are
-published only gzipped at `<name>.gz`; the loader retries that path and inflates what it gets, so a
-mirror of the upstream directory works as-is.
+There are three ways to reach it, and the first two need no host of your own.
 
-**The Objective-C runtime is hash-verified before it is used.** Its six SHA-256 receipts are pinned
-in `src/objective-c-assets.js` (the same values as the parent repository's `toolchain.lock.json`, and
-a test asserts the two agree), and `libobjc.a` and `headers.json` are checked against them before
-they are mounted. If a deployment swaps either file, the load fails loudly instead of compiling
-against something unexpected.
+**In Node, nothing.** Omit `baseUrl` and the package reads those files directly. The runtime insists
+on http(s) for its assets, so the package maps a reserved `.invalid` origin onto the files with a
+narrow `fetch` shim installed only around its own URL prefix - which is also why that origin is
+`.invalid`: if the shim were ever missing, the request fails loudly instead of quietly reaching a
+real host.
 
-The compiler assets are a different story: they are fetched by `@wasm-idle/llvm-core`'s own loader,
-which this package cannot hook, so **`bin/*` is not verified here**. If you need that, verify it at
-your CDN or in your build.
+**In a browser, one command.** A page cannot read a file inside an npm package, so copy the assets
+somewhere it can fetch them:
+
+```bash
+npx @live-codes/clang-wasm-copy-assets public/clang
+```
+
+That writes the tree above, plus an `asset-receipts.json` describing its own bytes, into a directory
+you already serve. Then `baseUrl: new URL('/clang/', location.href)`.
+
+**Or point `baseUrl` at a host you already have** - a CDN, an S3 bucket, whatever serves the tree
+above. `objectiveCBaseUrl` overrides just the Objective-C part if it lives somewhere else. Three of
+the Objective-C assets are published upstream only gzipped at `<name>.gz`; the loader retries that
+path and inflates what it gets, so a verbatim mirror of the upstream directory works too.
+
+### Verification
+
+Every asset the package reads is checked against a pinned SHA-256 receipt before it is used, and the
+receipts live in `src/asset-receipts.js`.
+
+- **Packaged (Node):** all seven, always.
+- **Hosted:** the two Objective-C assets, which this package fetches itself. They are the ones where
+  getting the wrong bytes produces the worst failure - a program that links against the wrong runtime
+  behaves unpredictably rather than failing.
+
+The compiler assets under `bin/` are fetched by `@wasm-idle/llvm-core`'s own loader, which this
+package cannot hook, so **a host is trusted for those**. If you need them covered, verify at your CDN
+or in your build - `asset-receipts.json` is written next to the copy for exactly that.
+
+### Size
+
+28 MB compressed, about 84 MB unpacked and resident. `npm install` pays it once; the runtime keeps it
+in memory between runs, which is what makes a warm compile ~100 ms instead of ~3 s.
 
 ## What each language can do
 
@@ -214,9 +252,27 @@ Two things are **not** supported, and both are limitations of the runtime rather
 npm test
 ```
 
-The tests start the parent repository's asset server on a free port and run real compiles for all
-four languages, so they need `node_modules` installed at the repository root and the rebuilt sysroot
-in `dist/`. See the parent README for how to build that.
+Real compiles for all four languages, in two halves. The packaged half runs straight off `assets/`
+with no server at all; the hosted half starts the parent repository's `serve.mjs` on a free port, so
+it also needs the rebuilt sysroot in `dist/` (see the parent README). The suite also checks that the
+shipped bytes hash to their receipts and that those receipts still agree with
+`toolchain.lock.json`.
+
+## License
+
+**MIT**, checked against everything the package ships and everything it depends on. All of it is
+permissive, so there was no compatibility question to work around: the bundled runtime is Apache-2.0
+with the LLVM exception, Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause and CC0, and `@wasm-idle/llvm-core`
+is MIT and Apache-2.0 with the LLVM exception.
+
+The runtime in `assets/` keeps its own licenses - see `THIRD-PARTY-NOTICES.md` for each file, where it
+came from, and the Apache-2.0 section 4(b) notice the rebuilt memfs requires. The `license` field in
+`package.json` is the SPDX expression for the tarball as a whole, which is why it names more than one
+license.
+
+**GNUstep Base is deliberately not here.** It is LGPL-2.1, and shipping it would put that question in
+front of everyone who used this package. It is also the Foundation path that does not work with this
+toolchain, so little is given up - see the Objective-C section above.
 
 ## Relationship to the demo in the parent repository
 

@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "license": "MIT",
   "description": "Browser C, C++ and Objective-C playground using @wasm-idle/llvm-core (Clang 22.1.8 compiled to WebAssembly)",
   "scripts": {
     "start": "node serve.mjs",

@@ -1,16 +1,10 @@
-// One Clang runtime per asset base URL, shared by every compiler created against it.
+// One Clang runtime per asset source, shared by every compiler created against it.
 //
 // The runtime costs ~29 MB of assets and ~84 MB unpacked, and C, C++ and Objective-C all compile
 // with the same clang/lld/memfs/sysroot set, so creating one per language would be wasteful - the
 // common case of a page offering all three would otherwise pay for it three times. Compilers hold a
 // reference; `dispose()` drops it when the last one goes.
-import {
-	BrowserClangRuntime,
-	loadRuntimeManifest,
-	resolveRuntimeBaseUrl,
-	resolveRuntimeManifestUrl
-} from '@wasm-idle/llvm-core/clang';
-import { OBJECTIVE_C_ASSET_RECEIPTS } from './objective-c-assets.js';
+import { BrowserClangRuntime } from '@wasm-idle/llvm-core/clang';
 
 // The runtime decompresses clang.wasm and the sysroot through this, so it has to clear the largest
 // asset, not the largest download.
@@ -18,36 +12,15 @@ const DEFAULT_MAX_ASSET_BYTES = 128 * 1024 * 1024;
 
 const runtimes = new Map();
 
-export async function acquireRuntime(baseUrl, options = {}) {
-	if (baseUrl == null || baseUrl === '') {
-		throw new Error('baseUrl is required: point it at the directory that hosts the runtime assets.');
-	}
-
-	let resolvedBaseUrl;
-	try {
-		resolvedBaseUrl = resolveRuntimeBaseUrl(baseUrl);
-	} catch (error) {
-		throw new Error(
-			`baseUrl must be an absolute http(s) URL (a browser may give it relative to the page): ` +
-				`${error.message}`
-		);
-	}
-
-	const objectiveCBaseUrl = options.objectiveCBaseUrl
-		? resolveRuntimeBaseUrl(options.objectiveCBaseUrl)
-		: new URL('objective-c/', resolvedBaseUrl).href;
-	const key = `${resolvedBaseUrl}\u0000${objectiveCBaseUrl}\u0000${options.maxAssetBytes ?? ''}`;
-
-	let pending = runtimes.get(key);
+export async function acquireRuntime(source, options = {}) {
+	let pending = runtimes.get(source.key);
 	if (!pending) {
-		pending = createRecord({ key, baseUrl: resolvedBaseUrl, objectiveCBaseUrl, options }).catch(
-			(error) => {
-				// A failed load must not poison the cache - the next caller should be able to retry.
-				runtimes.delete(key);
-				throw error;
-			}
-		);
-		runtimes.set(key, pending);
+		pending = createRecord(source, options).catch((error) => {
+			// A failed load must not poison the cache - the next caller should be able to retry.
+			runtimes.delete(source.key);
+			throw error;
+		});
+		runtimes.set(source.key, pending);
 	}
 
 	const record = await pending;
@@ -63,7 +36,7 @@ export function releaseRuntime(record, progressSink) {
 }
 
 // The runtime keeps one memfs and one compiler process, so two runs at once would write over each
-// other's files and swap each other's output stream. Runs queue on the record instead.
+// other's files and redirect each other's output. Runs queue on the record instead.
 export async function withRuntimeLock(record, work) {
 	const previous = record.queue;
 	let release;
@@ -89,36 +62,37 @@ function ensureSharedArrayBufferStub() {
 	}
 }
 
-async function createRecord({ key, baseUrl, objectiveCBaseUrl, options }) {
+async function createRecord(source, options) {
 	ensureSharedArrayBufferStub();
 
 	const record = {
-		key,
-		baseUrl,
-		objectiveCBaseUrl,
+		key: source.key,
+		source,
 		references: 0,
 		queue: Promise.resolve(),
 		progressSinks: new Set(),
 		runtime: null,
 		objectiveCRuntime: { pending: null, builds: 0 },
-		// Where the compiler's diagnostics go. The runtime is built with a stable callback that
-		// reads this field, rather than one bound to a per-run collector, because the memfs keeps
-		// the function it was constructed with - reassigning `runtime.stdout` later never reaches it.
+		// Where the compiler's diagnostics go. The runtime is built with a stable callback that reads
+		// this field, rather than one bound to a per-run collector, because the memfs keeps the
+		// function it was constructed with - reassigning `runtime.stdout` later never reaches it.
 		compilerOutput: () => {}
 	};
 
-	const manifestUrl = resolveRuntimeManifestUrl(baseUrl);
 	let manifest;
 	try {
-		manifest = await loadRuntimeManifest(manifestUrl);
+		manifest = await source.loadManifest();
 	} catch (error) {
-		throw new Error(`Failed to load the runtime manifest from ${manifestUrl}: ${error.message}`, {
+		throw new Error(`Failed to load the runtime manifest from ${source.description}: ${error.message}`, {
 			cause: error
 		});
 	}
 
+	// Must happen before the runtime exists: it fetches clang, lld, memfs and the sysroot itself.
+	source.installFetch();
+
 	const runtime = new BrowserClangRuntime({
-		runtimeBaseUrl: baseUrl,
+		runtimeBaseUrl: source.baseUrl,
 		manifest,
 		// The compiler's own stdin is never read; the program gets its input at execution time.
 		stdin: () => '',
@@ -146,10 +120,9 @@ export async function ensureObjectiveCRuntime(record) {
 }
 
 async function installObjectiveCRuntime(record) {
-	const base = record.objectiveCBaseUrl;
 	const [archive, headersBytes] = await Promise.all([
-		readVerifiedAsset(`${base}libobjc.a`, 'libobjc.a'),
-		readVerifiedAsset(`${base}headers.json`, 'headers.json')
+		record.source.readAsset('objective-c/libobjc.a'),
+		record.source.readAsset('objective-c/headers.json')
 	]);
 
 	for (const [path, contents] of parseHeaders(headersBytes)) {
@@ -206,59 +179,3 @@ export const addFileWithDirectories = (runtime, path, contents) => {
 	}
 	runtime.memfs.addFile(path, contents);
 };
-
-async function readVerifiedAsset(url, name) {
-	const receipt = OBJECTIVE_C_ASSET_RECEIPTS[name];
-	if (!receipt) throw new Error(`No pinned receipt for the Objective-C runtime asset ${name}`);
-
-	const bytes = await readAssetBytes(url, name);
-	if (bytes.byteLength !== receipt.bytes) {
-		throw new Error(
-			`The Objective-C runtime asset ${name} is ${bytes.byteLength} bytes, expected ${receipt.bytes}`
-		);
-	}
-	const digest = await sha256Hex(bytes);
-	if (digest !== receipt.sha256) {
-		throw new Error(
-			`The Objective-C runtime asset ${name} failed SHA-256 verification: ` +
-				`expected ${receipt.sha256}, got ${digest}`
-		);
-	}
-	return bytes;
-}
-
-async function readAssetBytes(url, name) {
-	let response = await fetch(url);
-	if (!response.ok) {
-		// Three of the six assets are published only gzipped, at <name>.gz.
-		const gzipped = await fetch(`${url}.gz`);
-		if (!gzipped.ok) {
-			throw new Error(`Failed to load the Objective-C runtime asset ${name} from ${url}: ${response.status}`);
-		}
-		response = gzipped;
-	}
-	const bytes = new Uint8Array(await response.arrayBuffer());
-	return isGzip(bytes) ? await inflateGzip(bytes, name) : bytes;
-}
-
-const isGzip = (bytes) => bytes.byteLength > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
-
-async function inflateGzip(bytes, name) {
-	if (typeof DecompressionStream !== 'function') {
-		throw new Error(`Inflating the Objective-C runtime asset ${name} needs DecompressionStream`);
-	}
-	const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-	return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-
-async function sha256Hex(bytes) {
-	const subtle = globalThis.crypto?.subtle;
-	if (!subtle) {
-		throw new Error(
-			'Verifying the Objective-C runtime assets needs crypto.subtle: a secure context in the ' +
-				'browser, or Node 20 and later.'
-		);
-	}
-	const digest = await subtle.digest('SHA-256', bytes);
-	return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}

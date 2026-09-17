@@ -190,32 +190,49 @@ const sendToolchainAsset = async (res, path) => {
 
 // ------------------------------------------------------------------- server
 
-createServer(async (req, res) => {
-	const requested = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
-
-	// Toolchain assets, from the same origin as the page.
-	if (requested.startsWith('/clang/')) {
-		await sendToolchainAsset(res, requested.slice('/clang/'.length));
-		return;
-	}
-
-	const target = resolve(join(root, normalize(requested === '/' ? '/index.html' : requested)));
-	if (target !== root && !target.startsWith(root + sep)) {
-		send(res, 403, 'text/plain; charset=utf-8', 'Forbidden');
-		return;
-	}
-
+const server = createServer(async (req, res) => {
 	try {
-		const info = await stat(target);
-		if (info.isDirectory()) {
-			send(res, 404, 'text/plain; charset=utf-8', 'Not found');
+		const requested = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+
+		// Toolchain assets, from the same origin as the page.
+		if (requested.startsWith('/clang/')) {
+			await sendToolchainAsset(res, requested.slice('/clang/'.length));
 			return;
 		}
-		send(res, 200, MIME[extname(target).toLowerCase()] || 'application/octet-stream', await readFile(target));
-	} catch {
-		send(res, 404, 'text/plain; charset=utf-8', 'Not found');
+
+		const target = resolve(join(root, normalize(requested === '/' ? '/index.html' : requested)));
+		if (target !== root && !target.startsWith(root + sep)) {
+			send(res, 403, 'text/plain; charset=utf-8', 'Forbidden');
+			return;
+		}
+
+		try {
+			const info = await stat(target);
+			if (info.isDirectory()) {
+				send(res, 404, 'text/plain; charset=utf-8', 'Not found');
+				return;
+			}
+			send(res, 200, MIME[extname(target).toLowerCase()] || 'application/octet-stream', await readFile(target));
+		} catch {
+			send(res, 404, 'text/plain; charset=utf-8', 'Not found');
+		}
+	} catch (error) {
+		// An async handler that rejects is an unhandled rejection, which takes the whole process
+		// down. That turns one bad request into connection resets on every later one, so it is
+		// contained here instead.
+		if (res.headersSent) res.destroy();
+		else send(res, 500, 'text/plain; charset=utf-8', `request failed: ${error}\n`);
 	}
-}).listen(port, () => {
+});
+
+// Browsers and undici pool connections, and will happily reuse one this server has already closed
+// after its default five-second idle timeout - which shows up as a random ECONNRESET on whatever
+// request happens to be next. This is a localhost development server, so keeping idle connections
+// open costs nothing.
+server.keepAliveTimeout = 60_000;
+server.headersTimeout = 65_000;
+
+server.listen(port, () => {
 	console.log(`Demo + toolchain on http://localhost:${port}/`);
 	console.log(`  toolchain assets: http://localhost:${port}/clang/`);
 	console.log(`  Objective-C runtime: http://localhost:${port}/clang/objective-c/ (mirrored, cached)`);

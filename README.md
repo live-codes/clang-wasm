@@ -804,12 +804,18 @@ with one API for all four language modes:
 ```js
 import { createCompiler } from '@live-codes/clang-wasm';
 
-const compiler = await createCompiler('cpp', { baseUrl: 'https://cdn.example.com/clang/', std: 'gnu++20' });
+const compiler = await createCompiler('cpp', { std: 'gnu++20' });   // Node: no host needed
 const { stdout, stderr, output, errors, exitCode } = await compiler.run(code, stdin);
 ```
 
 `std` takes the same choices this page's Std dropdown offers, and `standardsFor(language)` lists them
 for building the picker.
+
+**It carries its own copy of the runtime** - the same seven files this repository serves under
+`/clang/`, 28 MB compressed - so `npm install` is enough in Node, and a browser project gets them
+with `npx @live-codes/clang-wasm-copy-assets public/clang`. Nothing has to be hosted by anyone else,
+and nothing here has to stay up for it to work. Both copies are byte-identical: `toolchain.lock.json`
+pins all seven, and the package's tests fail if either copy drifts from the pins.
 
 It is **not** what the demo runs on, and the package README says why: the demo streams a program's
 output to the page as it arrives, while `run()` collects and returns it, and the demo loads the
@@ -818,8 +824,29 @@ dependencies by name cannot do. The Objective-C compile and link arguments are t
 contain, and the demo's copy came first. If you are embedding this rather than reading it, the package
 is the one to use.
 
-It is also verified independently: `npm test` in `packages/clang-wasm` starts this repository's asset
-server and runs real compiles for C, C++, Objective-C and Objective-C++ in Node.
+It is also verified independently: `npm test` in `packages/clang-wasm` runs real compiles for C, C++,
+Objective-C and Objective-C++ in Node, half of them straight off its packaged assets.
+
+## License
+
+**MIT** for everything written here: the demo, its worker and server, the build scripts, and the
+package in `packages/clang-wasm`. It was checked against every dependency, and all of them are
+permissive, so there was no compatibility question to work around.
+
+The binaries are someone else's and keep their own licenses, all of them permissive too: Apache-2.0
+with the LLVM exception for Clang, LLD, memfs and the sysroot, MIT for GNUstep's libobjc2 and for
+libffi. `THIRD-PARTY-NOTICES.md` lists each one with its origin, including the Apache-2.0 section
+4(b) notice that the rebuilt memfs requires.
+
+One thing in this repository is **not** permissive, and it is worth knowing about: the committed
+`.asset-cache/` holds GNUstep Base, which is **LGPL-2.1-or-later**. That does not change the license of
+anything of ours - the LGPL attaches to those files, not to the MIT work beside them - but it does make
+this repository a redistributor of LGPL code, so the obligations are met here rather than assumed: the
+licence text is in `LICENSES/LGPL-2.1.txt`, and the corresponding source - the GNUstep Base 1.31.1
+release the binaries were built from, identified by reading the version out of them - is committed in
+`third-party-sources/` with a note on exactly how well it matches and what could not be obtained.
+`THIRD-PARTY-NOTICES.md` has the detail. Nothing here uses those files: the package excludes them by
+design and Foundation does not work with this toolchain.
 
 ## LiveCodes integration sketch
 

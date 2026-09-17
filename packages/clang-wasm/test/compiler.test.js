@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import test, { after, before } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createCompiler, LANGUAGE_IDS, standardsFor } from '../src/index.js';
-import { OBJECTIVE_C_ASSET_RECEIPTS } from '../src/objective-c-assets.js';
+// By name, so the tests exercise the real entry point - including the `node` condition that wires
+// the packaged assets in.
+import { createCompiler, LANGUAGE_IDS, standardsFor } from '@live-codes/clang-wasm';
+import { ASSET_RECEIPTS } from '../src/asset-receipts.js';
 import { startAssetsServer } from './helpers.js';
 
 let server;
@@ -24,8 +28,11 @@ test('an unknown language is rejected with the list of valid ones', async () => 
 	await assert.rejects(() => createCompiler('rust', { baseUrl: server.baseUrl }), /Unknown language/);
 });
 
-test('baseUrl is required', async () => {
-	await assert.rejects(() => createCompiler('c', {}), /baseUrl is required/);
+test('a baseUrl that is not http(s) is rejected', async () => {
+	await assert.rejects(
+		() => createCompiler('c', { baseUrl: 'ftp://example.com/clang/' }),
+		/baseUrl must be an absolute http\(s\) URL/
+	);
 });
 
 test('C: stdout, stdin, exit code and the result shape', async () => {
@@ -339,20 +346,88 @@ test('an unreachable asset host fails with the URL it tried', async () => {
 	assert.match(String(compiler.message), /127\.0\.0\.1:9/);
 });
 
-test('the pinned Objective-C receipts match the repository lock file', async (t) => {
+test('the pinned receipts match the repository lock file', async (t) => {
 	const lockPath = fileURLToPath(new URL('../../../toolchain.lock.json', import.meta.url));
 	if (!existsSync(lockPath)) {
 		t.skip('no toolchain.lock.json next to this package');
 		return;
 	}
-	const assets = JSON.parse(readFileSync(lockPath, 'utf8')).objectiveC.assets;
+	const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+	const pinned = {
+		'runtime-manifest.v1.json': lock.hosted.assets['runtime-manifest.v1.json'],
+		'bin/clang.wasm.gz': lock.hosted.assets['bin/clang.wasm.gz'],
+		'bin/lld.wasm.gz': lock.hosted.assets['bin/lld.wasm.gz'],
+		'bin/memfs.wasm.gz': lock.memfs.outputs['memfs.wasm.gz'],
+		'bin/sysroot.tar.gz': lock.sysroot.outputs['sysroot.tar.gz'],
+		'objective-c/libobjc.a': lock.objectiveC.assets['libobjc.a'],
+		'objective-c/headers.json': lock.objectiveC.assets['headers.json']
+	};
+
+	for (const [name, receipt] of Object.entries(ASSET_RECEIPTS)) {
+		assert.deepEqual(
+			{ bytes: receipt.bytes, sha256: receipt.sha256 },
+			{ bytes: pinned[name].bytes, sha256: pinned[name].sha256 },
+			`${name} disagrees with toolchain.lock.json`
+		);
+	}
 	assert.deepEqual(
-		Object.fromEntries(
-			Object.entries(OBJECTIVE_C_ASSET_RECEIPTS).map(([name, receipt]) => [
-				name,
-				{ bytes: receipt.bytes, sha256: receipt.sha256 }
-			])
-		),
-		assets
+		Object.keys(ASSET_RECEIPTS).sort(),
+		Object.keys(pinned).sort(),
+		'every shipped asset should be pinned in both places'
+	);
+});
+
+test('every asset shipped in the package matches its pinned receipt', async () => {
+	for (const [name, receipt] of Object.entries(ASSET_RECEIPTS)) {
+		const bytes = await readFile(new URL(`../assets/${name}`, import.meta.url));
+		assert.equal(bytes.length, receipt.bytes, `${name} is the wrong size`);
+		assert.equal(
+			createHash('sha256').update(bytes).digest('hex'),
+			receipt.sha256,
+			`${name} does not hash to its receipt`
+		);
+	}
+});
+
+test('Node needs no baseUrl: the packaged assets are the default', async () => {
+	const compiler = await createCompiler('c');
+	const result = await compiler.run(
+		`#include <stdio.h>
+int main(void) { printf("packaged\\n"); return 0; }
+`
+	);
+
+	assert.deepEqual(result.errors, []);
+	assert.equal(result.stdout, 'packaged\n');
+	assert.equal(result.exitCode, 0);
+	compiler.dispose();
+});
+
+test('the packaged Objective-C assets are read and verified too', async () => {
+	const compiler = await createCompiler('objc');
+	const result = await compiler.run(
+		`#include <objc/runtime.h>
+#include <stdio.h>
+__attribute__((objc_root_class))
+@interface Thing { Class isa; }
+- (const char *)name;
+@end
+@implementation Thing
+- (const char *)name { return "packaged"; }
+@end
+int main(void) { id thing = class_createInstance(objc_getClass("Thing"), 0); printf("%s\\n", [thing name]); return 0; }
+`
+	);
+
+	assert.deepEqual(result.errors, []);
+	assert.equal(result.stdout, 'packaged\n');
+	compiler.dispose();
+});
+
+test('without a filesystem baseUrl is required, and the error says what to do', async () => {
+	const browserEntry = await import('../src/index.js');
+	await assert.rejects(
+		() => browserEntry.createCompiler('c'),
+		/baseUrl is required here[\s\S]*copy-assets/
 	);
 });
