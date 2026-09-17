@@ -141,6 +141,31 @@ standardsFor('c');         // ['gnu11', 'gnu17', 'gnu23']
 standardsFor('objcpp');    // ['gnu++11', 'gnu++14', 'gnu++17', 'gnu++20', 'gnu++23']
 ```
 
+## Loading it without a bundler
+
+`dist/clang-wasm.global.js` is a **minified IIFE bundle** - one classic script, 296 KB - for anywhere
+an ES module cannot go: a classic (non-module) worker, a plain `<script>`, a CDN URL handed to
+`importScripts()`. It is self-contained, so it needs no bundler and no import map.
+
+```js
+// worker.js - a classic worker: no { type: 'module' }, no imports
+importScripts('clang-wasm.global.js');
+
+const compiler = await self.clangWasm.createCompiler('cpp', { baseUrl: '/clang/' });
+const { stdout, errors, exitCode } = await compiler.run('int main() { return 0; }');
+```
+
+It sets `self.clangWasm` to the same three exports the module has - `createCompiler`, `LANGUAGE_IDS`
+and `standardsFor` - so the API above is unchanged.
+
+It is reachable as `@live-codes/clang-wasm/iife` if you want your tooling to find it, and it is
+committed rather than built on install, so a consumer never needs esbuild. Rebuild it with
+`npm run build:iife` after changing anything under `src/`.
+
+**A worker still has no filesystem**, so this bundle always needs a `baseUrl`: it is the browser entry,
+not the Node one. The assets themselves have to be served from somewhere a worker can fetch - see
+[Where the assets come from](#where-the-assets-come-from).
+
 ## Where the assets come from
 
 The runtime ships inside the package, about 28 MB compressed, laid out as the runtime expects a base
@@ -260,19 +285,20 @@ shipped bytes hash to their receipts and that those receipts still agree with
 
 ## License
 
-**MIT**, checked against everything the package ships and everything it depends on. All of it is
-permissive, so there was no compatibility question to work around: the bundled runtime is Apache-2.0
-with the LLVM exception, Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause and CC0, and `@wasm-idle/llvm-core`
-is MIT and Apache-2.0 with the LLVM exception.
+**MIT.** One license, for everything in this package that we wrote - and nothing here is copyleft, so
+nothing about it constrains the programs you compile or a project that bundles it.
 
-The runtime in `assets/` keeps its own licenses - see `THIRD-PARTY-NOTICES.md` for each file, where it
-came from, and the Apache-2.0 section 4(b) notice the rebuilt memfs requires. The `license` field in
-`package.json` is the SPDX expression for the tarball as a whole, which is why it names more than one
-license.
+The runtime in `assets/` and the JavaScript embedded in `dist/clang-wasm.global.js` are other projects'
+work, under their own permissive licenses: Apache-2.0 with the LLVM exception for Clang, LLD, memfs and
+the sysroot, MIT for GNUstep's libobjc2, and MIT / Apache-2.0 for the three packages the IIFE build
+bundles. Permissive licenses come with an attribution condition, so the bundle carries a three-line
+comment header and `THIRD-PARTY-NOTICES.md` records what is whose. That is the entire requirement - it
+is not a second license on this package, and it is why the bundle does not need to change anything
+about how it is used.
 
-**GNUstep Base is deliberately not here.** It is LGPL-2.1, and shipping it would put that question in
-front of everyone who used this package. It is also the Foundation path that does not work with this
-toolchain, so little is given up - see the Objective-C section above.
+**Nothing copyleft is here**, deliberately. The runtime the producer also publishes includes GNUstep
+Base, which is LGPL-2.1; it is left out so that a consumer never has to think about it, and it is also
+the Foundation path that does not work with this toolchain.
 
 ## Relationship to the demo in the parent repository
 

@@ -811,6 +811,11 @@ const { stdout, stderr, output, errors, exitCode } = await compiler.run(code, st
 `std` takes the same choices this page's Std dropdown offers, and `standardsFor(language)` lists them
 for building the picker.
 
+It also ships a **minified IIFE build** (`@live-codes/clang-wasm/iife`, 296 KB) for classic
+non-module workers, where an ES module cannot be loaded at all - `importScripts()` it and
+`self.clangWasm` is the same API. That matters for the kind of worker LiveCodes runs its languages in,
+which is the plumbing sketched at the end of this file.
+
 **It carries its own copy of the runtime** - the same seven files this repository serves under
 `/clang/`, 28 MB compressed - so `npm install` is enough in Node, and a browser project gets them
 with `npx @live-codes/clang-wasm-copy-assets public/clang`. Nothing has to be hosted by anyone else,
@@ -830,23 +835,18 @@ Objective-C and Objective-C++ in Node, half of them straight off its packaged as
 ## License
 
 **MIT** for everything written here: the demo, its worker and server, the build scripts, and the
-package in `packages/clang-wasm`. It was checked against every dependency, and all of them are
-permissive, so there was no compatibility question to work around.
+package in `packages/clang-wasm`. Every dependency and every bundled component is permissive as well -
+Apache-2.0 with the LLVM exception for Clang, LLD, memfs and the sysroot, MIT for GNUstep's libobjc2
+and for the three packages the IIFE build embeds - so one license covers the lot, and nothing here
+restricts what you can do with the programs you compile. `THIRD-PARTY-NOTICES.md` records what is
+whose, including the Apache-2.0 section 4(b) notice the rebuilt memfs requires.
 
-The binaries are someone else's and keep their own licenses, all of them permissive too: Apache-2.0
-with the LLVM exception for Clang, LLD, memfs and the sysroot, MIT for GNUstep's libobjc2 and for
-libffi. `THIRD-PARTY-NOTICES.md` lists each one with its origin, including the Apache-2.0 section
-4(b) notice that the rebuilt memfs requires.
-
-One thing in this repository is **not** permissive, and it is worth knowing about: the committed
-`.asset-cache/` holds GNUstep Base, which is **LGPL-2.1-or-later**. That does not change the license of
-anything of ours - the LGPL attaches to those files, not to the MIT work beside them - but it does make
-this repository a redistributor of LGPL code, so the obligations are met here rather than assumed: the
-licence text is in `LICENSES/LGPL-2.1.txt`, and the corresponding source - the GNUstep Base 1.31.1
-release the binaries were built from, identified by reading the version out of them - is committed in
-`third-party-sources/` with a note on exactly how well it matches and what could not be obtained.
-`THIRD-PARTY-NOTICES.md` has the detail. Nothing here uses those files: the package excludes them by
-design and Foundation does not work with this toolchain.
+**One exception, and it is a repository-cache matter rather than a licensing one.** `.asset-cache/`
+redistributes GNUstep Base, which is **LGPL-2.1-or-later**. That does not relicense anything of ours -
+the LGPL attaches to those files - and the obligations it does create are met here: the licence text is
+in `LICENSES/LGPL-2.1.txt` and the corresponding source is committed in `third-party-sources/`.
+**None of it is in the npm package, in `dist/clang-wasm.global.js`, or in anything published to a
+CDN**, so a consumer of either never meets it.
 
 ## LiveCodes integration sketch
 

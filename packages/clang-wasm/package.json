@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "description": "Run C, C++ and Objective-C with one API, on Clang 22 compiled to WebAssembly",
   "type": "module",
-  "license": "MIT AND (Apache-2.0 WITH LLVM-exception) AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND CC0-1.0",
+  "license": "MIT",
   "exports": {
     ".": {
       "node": "./src/index.node.js",
       "browser": "./src/index.js",
       "default": "./src/index.js"
-    }
+    },
+    "./iife": "./dist/clang-wasm.global.js"
   },
   "bin": {
     "clang-wasm-copy-assets": "./bin/copy-assets.mjs"
@@ -17,6 +18,8 @@
   "files": [
     "src",
     "bin",
+    "scripts",
+    "dist",
     "assets",
     "THIRD-PARTY-NOTICES.md"
   ],
@@ -24,7 +27,11 @@
     "node": ">=20"
   },
   "scripts": {
+    "build:iife": "node scripts/build-iife.mjs",
     "test": "node --test \"test/*.test.js\""
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
   },
   "dependencies": {
     "@wasm-idle/llvm-core": "^1.0.0"

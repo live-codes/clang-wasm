@@ -1,7 +1,11 @@
 # Third-party notices
 
-This package's own code is **MIT** (see `LICENSE`). The runtime it ships in `assets/` is not: those
-seven files are third-party builds, and this file is the notice they require.
+This package's own code is **MIT** (see `LICENSE`), and that is what the `license` field says. This
+file is not a second license on it: it is the attribution that the third-party components below
+require, and the record of where each one came from.
+
+The runtime in `assets/` and the JavaScript bundled into `dist/clang-wasm.global.js` are not ours.
+Those seven asset files are third-party builds, and this file is the notice they require.
 
 Every asset here is **permissive**. None is copyleft, and nothing in this package places a copyleft
 obligation on the programs you compile with it. That was a deliberate constraint on what the package
@@ -56,9 +60,25 @@ with that author first.
 
 ## What this package depends on
 
-`@wasm-idle/llvm-core` is required at runtime and is **not** bundled: it supplies the code that drives
-the compiler. It is licensed MIT AND Apache-2.0 WITH LLVM-exception. It ships no binaries of its own,
-which is why this package has to carry them.
+`@wasm-idle/llvm-core` drives the compiler, and it ships no binaries of its own - which is why this
+package has to carry the assets above.
+
+How it is shipped differs by entry point, and one of them changes the obligations:
+
+- **`src/`** - the ESM and Node builds - **imports** it. Nothing is bundled, so a consumer's own
+  dependency resolution applies and this package redistributes none of it.
+- **`dist/clang-wasm.global.js`** - the IIFE build, for classic workers and pages that cannot use
+  modules - **bundles it**, together with its own runtime dependencies. That build does redistribute
+  their code, so it carries their notices in its banner, and if you pass that file on you should pass
+  this file with it.
+
+Bundled into `dist/clang-wasm.global.js`:
+
+| Package | License |
+| --- | --- |
+| `@wasm-idle/llvm-core` | MIT AND Apache-2.0 WITH LLVM-exception |
+| `@bjorn3/browser_wasi_shim` | MIT OR Apache-2.0 |
+| `fflate` | MIT |
 
 ## What is deliberately absent
 
