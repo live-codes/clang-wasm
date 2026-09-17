@@ -796,6 +796,31 @@ Bottom line: the language and diagnostics story improves enormously and the libr
 better too, but **do not delete `cpp-wasm` in the same release**. Ship `llvm-core` as a new language
 (or behind a flag), diff real user snippets against both, and only then switch the default.
 
+## The package in `packages/clang-wasm`
+
+Everything above is the demo. The same toolchain is also available as a library, `@live-codes/clang-wasm`,
+with one API for all four language modes:
+
+```js
+import { createCompiler } from '@live-codes/clang-wasm';
+
+const compiler = await createCompiler('cpp', { baseUrl: 'https://cdn.example.com/clang/', std: 'gnu++20' });
+const { stdout, stderr, output, errors, exitCode } = await compiler.run(code, stdin);
+```
+
+`std` takes the same choices this page's Std dropdown offers, and `standardsFor(language)` lists them
+for building the picker.
+
+It is **not** what the demo runs on, and the package README says why: the demo streams a program's
+output to the page as it arrives, while `run()` collects and returns it, and the demo loads the
+toolchain from a CDN module URL so it needs no bundler - which a package that imports its
+dependencies by name cannot do. The Objective-C compile and link arguments are the one piece both
+contain, and the demo's copy came first. If you are embedding this rather than reading it, the package
+is the one to use.
+
+It is also verified independently: `npm test` in `packages/clang-wasm` starts this repository's asset
+server and runs real compiles for C, C++, Objective-C and Objective-C++ in Node.
+
 ## LiveCodes integration sketch
 
 - No COOP/COEP needed for normal runs (see gotcha 1). Keep the LLDB debug path, which does need real

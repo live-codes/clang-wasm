@@ -1,0 +1,32 @@
+{
+  "name": "@live-codes/clang-wasm",
+  "version": "0.1.0",
+  "description": "Run C, C++ and Objective-C with one API, on Clang 22 compiled to WebAssembly",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@wasm-idle/llvm-core": "^1.0.0"
+  },
+  "keywords": [
+    "clang",
+    "wasm",
+    "webassembly",
+    "c",
+    "c++",
+    "objective-c",
+    "compiler",
+    "playground"
+  ]
+}
