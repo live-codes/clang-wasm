@@ -3,7 +3,7 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<title>C/C++ in the browser — Clang 22.1.8 via @wasm-idle/llvm-core</title>
+		<title>C, C++ and Objective-C in the browser — Clang 22.1.8 via @wasm-idle/llvm-core</title>
 		<style>
 			:root {
 				--bg: #14161a;
@@ -131,8 +131,8 @@
 	</head>
 	<body>
 		<header>
-			<h1>C/C++ in the browser</h1>
-			<span class="sub">Clang 22.1.8 &rarr; WebAssembly &middot; full libc++ &middot; C++23 &middot; Web Worker</span>
+			<h1>C, C++ &amp; Objective-C in the browser</h1>
+			<span class="sub">Clang 22.1.8 &rarr; WebAssembly &middot; full libc++ &middot; C++23 &middot; C23 &middot; Objective-C (libobjc2) &middot; Web Worker</span>
 			<span class="spacer"></span>
 			<div class="controls">
 				<span class="field">
@@ -140,6 +140,8 @@
 					<select id="language" class="small">
 						<option value="CPP" selected>C++</option>
 						<option value="C">C</option>
+						<option value="OBJC">Objective-C</option>
+						<option value="OBJCXX">Objective-C++</option>
 					</select>
 				</span>
 				<span class="field">
@@ -184,12 +186,18 @@
 			// ---------------------------------------------------------------------------
 			// Module source. Defaults to a CDN so the page needs no bundler; `?local=1`
 			// uses the bundled copy instead (npm run bundle).
+			//
+			// C and C++ use the package's /clang entry point. Objective-C uses /objective-c,
+			// which installs the worker that links GNUstep's libobjc2. Both are in the local
+			// bundle, so `?local=1` names the same file twice.
 			// ---------------------------------------------------------------------------
+			const LOCAL_BUNDLE = new URLSearchParams(location.search).has('local');
 			const LLVM_CORE_URL =
 				window.LLVM_CORE_URL ??
-				(new URLSearchParams(location.search).has('local')
-					? './vendor/llvm-core-clang.js'
-					: 'https://esm.sh/@wasm-idle/llvm-core@1.0.0/clang');
+				(LOCAL_BUNDLE ? './vendor/llvm-core-clang.js' : 'https://esm.sh/@wasm-idle/llvm-core@1.0.0/clang');
+			const LLVM_CORE_OBJECTIVE_C_URL =
+				window.LLVM_CORE_OBJECTIVE_C_URL ??
+				(LOCAL_BUNDLE ? './vendor/llvm-core-clang.js' : 'https://esm.sh/@wasm-idle/llvm-core@1.0.0/objective-c');
 
 			// ---------------------------------------------------------------------------
 			// Compiler assets. The npm package ships code only; the toolchain is fetched
@@ -253,11 +261,38 @@
 			// Exceptions are not supported by this toolchain (nor by cpp-wasm's). The failure is
 			// an obscure link error, so say something useful up front.
 			const EXCEPTION_PATTERN = /\b(try|catch|throw)\b\s*[({]/;
-			const usesExceptions = (code) => EXCEPTION_PATTERN.test(code.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, ''));
+			// Objective-C's own exception keywords. `@try` also matches the pattern above, so the
+			// two are checked separately rather than relying on that.
+			const OBJECTIVE_C_EXCEPTION_PATTERN = /@\s*(?:try|throw|catch)\b/;
+			const usesExceptions = (code) =>
+				EXCEPTION_PATTERN.test(code.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, ''));
+			const usesObjectiveCExceptions = (code) => OBJECTIVE_C_EXCEPTION_PATTERN.test(code);
+
+			// Objective-C here is libobjc2 only - a runtime, with no class library behind it. The
+			// installer does have a Foundation path (it links GNUstep Base and inlines its headers),
+			// but it does not survive that header set. Thirteen of those headers import
+			// <GNUstepBase/GSBlocks.h>, which it never mounts, and it emits a header wherever it is
+			// first reached, including inside #if branches it does not evaluate. Measured: the
+			// umbrella import fails to compile, and a narrow import links but then fails to
+			// instantiate. Warn rather than let it surface as a bare compiler error.
+			const FOUNDATION_PATTERN = /#\s*(?:include|import)\s+[<"]Foundation\/|@import\s+Foundation\b/;
+			const usesFoundation = (code) => FOUNDATION_PATTERN.test(code);
+
+			// A link failure never names this, and it is the most likely reason a program that
+			// compiled will not link.
+			const failureHint = (language) =>
+				OBJECTIVE_C_LANGUAGES.has(language)
+					? '\nThe compile or link failed. Objective-C here is libobjc2 with no class library,\n' +
+						'so Foundation (NSObject/NSString) is not available - and neither are\n' +
+						'@try/@catch/@throw, which fail to compile and (with -fobjc-exceptions, which\n' +
+						'moves the failure to the link) ask for an objc_exception_throw libobjc2 lacks.\n'
+					: '\nThe compile or link failed. C++ exceptions (try/catch/throw) are not\n' +
+						'supported by this toolchain - neither is cpp-wasm.\n';
 
 			// ---------------------------------------------------------------------------
 			// Examples. The first two run on either asset set; the C++23 and "full library"
-			// ones need the rebuilt set.
+			// ones need the rebuilt set. The Objective-C ones additionally fetch the GNUstep
+			// runtime - 273 KB for libobjc2 alone, or the Foundation ones on top of it.
 			// ---------------------------------------------------------------------------
 			const EXAMPLES = {
 				basics: {
@@ -420,6 +455,108 @@ int main(void) {
     return 0;
 }
 `
+				},
+				objc: {
+					label: 'ObjC — classes, methods, ivars',
+					language: 'OBJC',
+					standard: 'gnu23',
+					code: `// Objective-C compiles with Clang's -fobjc-runtime=gnustep-2.0 and links GNUstep's libobjc2.
+//
+// There is no Foundation here, and no Object base class either: libobjc2 is a runtime, not a
+// class library, and it does not implement Object. So a hierarchy starts at an objc_root_class
+// and instances come from class_createInstance(). That is the shape @wasm-idle's own Objective-C
+// example uses, and it is what this toolchain supports - see the notes below the output.
+#include <objc/runtime.h>
+#include <stdio.h>
+
+__attribute__((objc_root_class))
+@interface Counter {
+    Class isa;
+    int _sum;
+}
+- (void)add:(int)amount;
+- (int)sum;
+- (void)describeInto:(char *)buffer size:(int)size;
+@end
+
+@implementation Counter
+- (void)add:(int)amount {
+    _sum += amount;
+}
+
+- (int)sum {
+    return _sum;
+}
+
+- (void)describeInto:(char *)buffer size:(int)size {
+    snprintf(buffer, (size_t)size, "Counter(sum = %d)", _sum);
+}
+@end
+
+int main(void) {
+    id counter = class_createInstance(objc_getClass("Counter"), 0);
+    for (int value = 1; value <= 10; value++) {
+        [counter add:value];
+    }
+
+    char description[32];
+    [counter describeInto:description size:(int)sizeof(description)];
+    printf("%s\\n", description);
+    return 0;
+}
+`
+				},
+				objcpp: {
+					label: 'ObjC++ — C++ containers with messages',
+					language: 'OBJCXX',
+					standard: 'gnu++23',
+					code: `// Objective-C++: the .mm extension compiles one translation unit as both. C++ containers and
+// Objective-C messages are used together, still on libobjc2 and still with no Foundation.
+#include <objc/runtime.h>
+
+#include <cstdio>
+#include <numeric>
+#include <string>
+#include <vector>
+
+__attribute__((objc_root_class))
+@interface Summer {
+    Class isa;
+}
+- (int)total:(const std::vector<int> &)values;
+- (const char *)join:(const std::vector<std::string> &)parts into:(char *)buffer size:(int)size;
+@end
+
+@implementation Summer
+- (int)total:(const std::vector<int> &)values {
+    return std::accumulate(values.begin(), values.end(), 0);
+}
+
+- (const char *)join:(const std::vector<std::string> &)parts into:(char *)buffer size:(int)size {
+    std::string joined;
+    for (const std::string &part : parts) {
+        if (!joined.empty()) {
+            joined += ' ';
+        }
+        joined += part;
+    }
+    std::snprintf(buffer, (size_t)size, "%s", joined.c_str());
+    return buffer;
+}
+@end
+
+int main() {
+    std::vector<int> values{1, 2, 3, 4, 5};
+    std::vector<std::string> parts{"Objective-C++", "mixes", "std::vector", "with", "messages"};
+
+    id summer = class_createInstance(objc_getClass("Summer"), 0);
+    char sentence[128];
+    [summer join:parts into:sentence size:(int)sizeof(sentence)];
+
+    std::printf("%s -> total=%d\\n", sentence, [summer total:values]);
+    return 0;
+}
+`
 				}
 			};
 
@@ -442,9 +579,33 @@ int main(void) {
 					['gnu11', 'C11'],
 					['gnu17', 'C17'],
 					['gnu23', 'C23 (default)']
+				],
+				// The Objective-C worker compiles at gnu11 / gnu++20 itself and takes no standard
+				// option, so these are appended as -std= like the C and C++ ones and the later flag
+				// wins. Verified: __STDC_VERSION__ and __cplusplus track the selection, and C23-only
+				// syntax compiles at gnu23 and fails at gnu11, so the option really is applied.
+				// They default to C23 / C++23 to match the C and C++ modes.
+				OBJC: [
+					['gnu11', 'C11'],
+					['gnu17', 'C17'],
+					['gnu23', 'C23 (default)']
+				],
+				OBJCXX: [
+					['gnu++11', 'C++11'],
+					['gnu++14', 'C++14'],
+					['gnu++17', 'C++17'],
+					['gnu++20', 'C++20'],
+					['gnu++23', 'C++23 (default)']
 				]
 			};
-			const DEFAULT_STANDARD = { CPP: 'gnu++23', C: 'gnu23' };
+			const DEFAULT_STANDARD = { CPP: 'gnu++23', C: 'gnu23', OBJC: 'gnu23', OBJCXX: 'gnu++23' };
+
+			// Objective-C selects its language from the file extension: .m is Objective-C, .mm is
+			// Objective-C++. The worker is told the name and derives the rest.
+			const FILE_NAMES = { CPP: 'main.cpp', C: 'main.c', OBJC: 'main.m', OBJCXX: 'main.mm' };
+			const fileNameFor = (language) => FILE_NAMES[language] ?? 'main.cpp';
+			const OBJECTIVE_C_LANGUAGES = new Set(['OBJC', 'OBJCXX']);
+			const EXAMPLES_FOR_LANGUAGE = { CPP: 'basics', C: 'c', OBJC: 'objc', OBJCXX: 'objcpp' };
 
 			const els = {
 				code: document.getElementById('code'),
@@ -535,11 +696,7 @@ int main(void) {
 							if (!renderCompilerOutput(msg.compilerOutput)) append(`${msg.error}\n`, 'err');
 							runState.failed = true;
 							setStatus('failed', 'error');
-							append(
-								'\nThe compile or link failed. C++ exceptions (try/catch/throw) are not\n' +
-									'supported by this toolchain - neither is cpp-wasm.\n',
-								'warn'
-							);
+							append(failureHint(runState.language), 'warn');
 						}
 						break;
 					case 'stdout':
@@ -551,9 +708,12 @@ int main(void) {
 					case 'done': {
 						const { compileMs, startedAt } = runState;
 						const totalMs = Math.round(performance.now() - startedAt);
+						// Objective-C does not report an artifact size, so that field is left out.
+						const artifact =
+							msg.artifactBytes == null ? '' : `, artifact ${(msg.artifactBytes / 1024).toFixed(1)} KiB`;
 						append(
-							`\n[exit ${msg.exitCode ?? 0}]  compiled in ${compileMs ?? '?'} ms, ran in ${msg.runMs} ms, ` +
-								`artifact ${(msg.artifactBytes / 1024).toFixed(1)} KiB  (${totalMs} ms total, off the main thread)\n`,
+							`\n[exit ${msg.exitCode ?? 0}]  compiled in ${compileMs ?? '?'} ms, ran in ${msg.runMs} ms` +
+								`${artifact}  (${totalMs} ms total, off the main thread)\n`,
 							msg.exitCode ? 'err' : 'ok'
 						);
 						els.timing.textContent = `compile ${compileMs ?? '?'} ms · run ${msg.runMs} ms`;
@@ -586,6 +746,7 @@ int main(void) {
 				if (busy) return;
 
 				const language = els.language.value;
+				const objectiveC = OBJECTIVE_C_LANGUAGES.has(language);
 				const standard = els.standard.value;
 				let baseUrl;
 				try {
@@ -602,23 +763,39 @@ int main(void) {
 				els.output.textContent = '';
 				els.timing.textContent = '';
 				setStatus('starting…');
-				runState = { startedAt: performance.now(), compileMs: null };
+				runState = { startedAt: performance.now(), compileMs: null, language };
 
-				if (usesExceptions(els.code.value)) {
+				if (objectiveC && usesFoundation(els.code.value)) {
 					append(
-						'Note: this source uses try/catch/throw. C++ exceptions are not supported by\n' +
-							'this toolchain (cpp-wasm has the same limitation), so it will fail to link.\n\n',
+						'Note: this source imports Foundation. GNUstep Base is not usable here - the\n' +
+							'runtime inlines its headers into the translation unit and that does not survive\n' +
+							'them, so it either fails to compile or fails to instantiate. What works is plain\n' +
+							'Objective-C on libobjc2; the examples show the shape it needs.\n\n',
+						'warn'
+					);
+				}
+
+				if (objectiveC ? usesObjectiveCExceptions(els.code.value) : usesExceptions(els.code.value)) {
+					append(
+						objectiveC
+							? 'Note: this source uses @try/@catch/@throw. Objective-C exceptions are disabled\n' +
+								'and the runtime ships no objc_exception_throw, so this fails to compile -\n' +
+								'adding -fobjc-exceptions only moves the failure to the link.\n\n'
+							: 'Note: this source uses try/catch/throw. C++ exceptions are not supported by\n' +
+								'this toolchain (cpp-wasm has the same limitation), so it will fail to link.\n\n',
 						'warn'
 					);
 				}
 
 				worker.postMessage({
 					type: 'run',
-					moduleUrl: LLVM_CORE_URL,
+					// Objective-C is a separate package entry point: the worker installer that links
+					// GNUstep's runtime, rather than the Clang compile-artifact path.
+					moduleUrl: objectiveC ? LLVM_CORE_OBJECTIVE_C_URL : LLVM_CORE_URL,
 					baseUrl,
 					code: els.code.value,
 					language,
-					fileName: language === 'C' ? 'main.c' : 'main.cpp',
+					fileName: fileNameFor(language),
 					compileArgs: [...(standard ? ['-std=' + standard] : []), ...parseArgs(els.cflags.value)],
 					args: parseArgs(els.args.value),
 					stdin: els.stdin.value
@@ -641,7 +818,7 @@ int main(void) {
 			const syncStandards = () => {
 				fillSelect(els.standard, STANDARDS[els.language.value]);
 				els.standard.value = DEFAULT_STANDARD[els.language.value];
-				els.filename.textContent = els.language.value === 'C' ? 'main.c' : 'main.cpp';
+				els.filename.textContent = fileNameFor(els.language.value);
 			};
 
 			const loadExample = (key) => {
@@ -654,7 +831,7 @@ int main(void) {
 				els.language.value = example.language;
 				fillSelect(els.standard, STANDARDS[example.language]);
 				els.standard.value = example.standard;
-				els.filename.textContent = example.language === 'C' ? 'main.c' : 'main.cpp';
+				els.filename.textContent = fileNameFor(example.language);
 				els.code.value = example.code;
 				els.output.textContent = '';
 				els.timing.textContent = '';
@@ -668,7 +845,7 @@ int main(void) {
 
 			els.language.addEventListener('change', () => {
 				syncStandards();
-				loadExample(els.language.value === 'C' ? 'c' : 'basics');
+				loadExample(EXAMPLES_FOR_LANGUAGE[els.language.value] ?? 'basics');
 			});
 			els.standard.addEventListener('change', () => {
 				els.timing.textContent = '';
@@ -690,7 +867,13 @@ int main(void) {
 			loadExample('basics');
 			els.stdin.value = '5 3 9 1 4';
 
-			window.demo = { run, baseUrl: RUNTIME_BASE_URL, worker };
+			window.demo = {
+				run,
+				baseUrl: RUNTIME_BASE_URL,
+				worker,
+				llvmCoreUrl: LLVM_CORE_URL,
+				objectiveCUrl: LLVM_CORE_OBJECTIVE_C_URL
+			};
 		</script>
 	</body>
 </html>

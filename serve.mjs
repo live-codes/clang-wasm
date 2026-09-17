@@ -4,12 +4,13 @@
 //
 // Serves two things from one origin:
 //   /            the demo page
-//   /clang/*     the Clang toolchain assets the page fetches
+//   /clang/*     the Clang toolchain assets the page fetches, including the mirrored
+//                Objective-C runtime under /clang/objective-c/
 //
 // The rebuilt assets come from dist/ and are required - the upstream pruned memfs/sysroot are
 // deliberately NOT served, because that toolchain cannot compile most of C++20/23 and serving it
-// would be a silent downgrade. clang, lld and the manifest are not rebuilt, so they are proxied
-// from upstream once and cached.
+// would be a silent downgrade. clang, lld, the manifest and the Objective-C runtime are not
+// rebuilt, so they are proxied from upstream once and cached.
 //
 // To deploy, put all five files on a static host / CDN, verify them against toolchain.lock.json,
 // and point the page at it with ?baseUrl=https://your-cdn/clang/.
@@ -35,6 +36,12 @@ const REBUILT = {
 
 // Not rebuilt - proxied from upstream and cached.
 const PROXIED = ['runtime-manifest.v1.json', 'bin/clang.wasm.gz', 'bin/lld.wasm.gz'];
+
+// The Objective-C runtime (GNUstep libobjc2, plus GNUstep Base and libffi for Foundation) is not
+// rebuilt here either. It is mirrored from the producer under the same base URL as the compiler,
+// so one origin and one ?baseUrl= still cover the whole toolchain.
+const UPSTREAM_OBJECTIVE_C = 'https://seorii.page/wasm-idle/wasm-objectivec/';
+const OBJECTIVE_C_PREFIX = 'objective-c/';
 
 const missingRebuilt = Object.values(REBUILT).filter((file) => !existsSync(join(root, file)));
 
@@ -73,7 +80,65 @@ const send = (res, status, contentType, body, extra = {}) => {
 	res.end(body);
 };
 
+// Mirrors the Objective-C runtime assets from the producer and caches them. Three of the six are
+// published only gzipped (libgnustep-base.a and foundation-headers.json are the interesting ones),
+// so a missing plain path is retried as .gz and re-served at the plain path with
+// `content-encoding: gzip`. The browser inflates it and the loader verifies the decoded bytes
+// against the receipt in toolchain.lock.json, so the wire cost stays the compressed one.
+const sendObjectiveCAsset = async (res, name) => {
+	if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+		send(res, 404, 'text/plain; charset=utf-8', `not an Objective-C runtime asset: ${name}`);
+		return;
+	}
+
+	const bodyPath = join(cacheDir, 'objective-c', name, 'body');
+	const metaPath = join(cacheDir, 'objective-c', name, 'meta.json');
+	if (existsSync(metaPath)) {
+		const meta = JSON.parse(await readFile(metaPath, 'utf8'));
+		send(res, meta.status, meta.type, await readFile(bodyPath), meta.encoding ? { 'content-encoding': meta.encoding } : {});
+		return;
+	}
+
+	try {
+		let asset;
+		const direct = await fetch(UPSTREAM_OBJECTIVE_C + name);
+		if (direct.ok) {
+			asset = {
+				status: 200,
+				body: Buffer.from(await direct.arrayBuffer()),
+				type: direct.headers.get('content-type') || 'application/octet-stream',
+				encoding: null
+			};
+		} else {
+			const gzipped = await fetch(UPSTREAM_OBJECTIVE_C + name + '.gz');
+			if (!gzipped.ok) {
+				send(res, 404, 'text/plain; charset=utf-8', `not found upstream: ${name}`);
+				return;
+			}
+			asset = {
+				status: 200,
+				body: Buffer.from(await gzipped.arrayBuffer()),
+				type: 'application/octet-stream',
+				encoding: 'gzip'
+			};
+		}
+
+		await mkdir(dirname(bodyPath), { recursive: true });
+		await writeFile(bodyPath, asset.body);
+		await writeFile(metaPath, JSON.stringify({ status: asset.status, type: asset.type, encoding: asset.encoding }));
+		console.log(`  cached objective-c/${name} (${asset.body.length} bytes${asset.encoding ? ', gzip on the wire' : ''})`);
+		send(res, asset.status, asset.type, asset.body, asset.encoding ? { 'content-encoding': asset.encoding } : {});
+	} catch (error) {
+		send(res, 502, 'text/plain; charset=utf-8', `could not mirror Objective-C asset ${name}: ${error}`);
+	}
+};
+
 const sendToolchainAsset = async (res, path) => {
+	if (path.startsWith(OBJECTIVE_C_PREFIX)) {
+		await sendObjectiveCAsset(res, path.slice(OBJECTIVE_C_PREFIX.length));
+		return;
+	}
+
 	const rebuilt = REBUILT[path];
 	if (rebuilt) {
 		const file = join(root, rebuilt);
@@ -153,6 +218,7 @@ createServer(async (req, res) => {
 }).listen(port, () => {
 	console.log(`Demo + toolchain on http://localhost:${port}/`);
 	console.log(`  toolchain assets: http://localhost:${port}/clang/`);
+	console.log(`  Objective-C runtime: http://localhost:${port}/clang/objective-c/ (mirrored, cached)`);
 	if (missingRebuilt.length) {
 		console.log('\n  WARNING: the rebuilt toolchain is not built, so the demo will fail to load:');
 		for (const file of missingRebuilt) console.log(`    missing ${file}`);

@@ -59,5 +59,36 @@
         "nodeCost": 296
       }
     }
+  },
+  "objectiveC": {
+    "source": "https://seorii.page/wasm-idle/wasm-objectivec/",
+    "discoveredVia": "@wasm-idle/llvm-core/objective-c declares the six asset names; the receipts are the ones its own app pins in its bundle (clangAssetIntegrity), and all six were re-verified byte-for-byte against these URLs.",
+    "why": "Objective-C is not a Clang flag: the program links a runtime, and libobjc2's load function needs a constructor the Clang runtime's link line does not emit. These are the assets @wasm-idle/llvm-core/objective-c expects.",
+    "license": {
+      "libobjc.a": "MIT (GNUstep libobjc2)",
+      "headers.json": "MIT (GNUstep libobjc2 headers)",
+      "libgnustep-base.a": "LGPL-2.1-or-later (GNUstep Base) - note: linking it into a user program is the usual LGPL question, and it is only fetched when the source imports Foundation",
+      "libgnustep-base.o": "LGPL-2.1-or-later (GNUstep Base), not fetched by the runtime",
+      "foundation-headers.json": "LGPL-2.1-or-later (GNUstep Base headers)",
+      "libffi.a": "MIT (libffi)"
+    },
+    "delivery": "Three of the six are published only gzipped at <name>.gz; the loader retries that path and inflates it, verifying the decoded bytes. serve.mjs mirrors them so the uncompressed path works too, and re-serves them with content-encoding: gzip to keep the wire cost compressed.",
+    "used": "Only libobjc.a and headers.json are fetched: they are the whole cost of plain Objective-C, 273503 bytes. The other four belong to the installer's Foundation path (GNUstep Base + libffi), which is not usable here - see README. The integrity map still has to carry all six, because the installer validates the receipt of every asset name it declares.",
+    "wire": {
+      "plain Objective-C (libobjc2 only)": "190272 + 83231 = 273503 bytes",
+      "with Foundation (not usable here)": "+ 4671198 (libgnustep-base.a.gz) + 313306 (foundation-headers.json.gz) + 4966 (libffi.a) = 5.3 MB on the wire, 17.1 MB decoded"
+    },
+    "memfsNodes": {
+      "headers.json": 27,
+      "note": "Only what the mounted headers.json needs: 25 files + 2 directories. Foundation's foundation-headers.json would add 1 more at load, inlining the rest. Neither is a constraint against 4091 usable nodes - the Objective-C runtime was never why the producer shipped a pruned sysroot."
+    },
+    "assets": {
+      "libobjc.a": { "bytes": 190272, "sha256": "1dde20d4ce78eed271ab725062ef25f1923b20d51384943c9b8f7177eb1fc2d9" },
+      "headers.json": { "bytes": 83231, "sha256": "64bf5a09feffa612e6f82cfc52f3d6a9c5e4fc3064c3824c24aeea59cb544d8e" },
+      "libgnustep-base.a": { "bytes": 15220588, "sha256": "1915b83476f7a520d8ae85c2e02603d245ba6bfc96d7e2593a552d079a7c4526" },
+      "libgnustep-base.o": { "bytes": 13557664, "sha256": "4022983db158350fe82ccd8c6eaf1c9e1305ee9233a6d7e3f9d5508a4f937aa7" },
+      "foundation-headers.json": { "bytes": 1581430, "sha256": "116eaafa65f0bf65d64bd4143abc5c00aea54de19fe4bf9e4cbe88965db9d719" },
+      "libffi.a": { "bytes": 4966, "sha256": "dcdf2754536c93dcadca640a26fe4eb415ee58c15db7a53072e0f18f322e2cbd" }
+    }
   }
 }

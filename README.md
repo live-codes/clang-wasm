@@ -39,9 +39,9 @@ Compare that with the main-thread version, where the same compile produced a sin
 
 | Control | What it does |
 | --- | --- |
-| **Lang** | C++ or C — switches the standard list, the default and the example |
-| **Std** | `gnu++11` … **`gnu++23`** (default), or `gnu11` / `gnu17` / **`gnu23`** (default). Prepended as `-std=`, so the extra Compile args can still override it |
-| **Example** | Four C++ samples plus one C sample — see below |
+| **Lang** | C++, C, Objective-C or Objective-C++ — switches the standard list, the default and the example |
+| **Std** | `gnu++11` … **`gnu++23`** (default), or `gnu11` / `gnu17` / **`gnu23`** (default) for C and Objective-C. Prepended as `-std=`, so the extra Compile args can still override it |
+| **Example** | Four C++ samples, one C sample and two Objective-C ones — see below |
 | **Compile args** | Extra clang flags, e.g. `-Wall -O2` |
 | **Program args / stdin** | argv and stdin for the compiled program |
 
@@ -133,11 +133,14 @@ bin/lld.wasm.gz
 bin/sysroot.tar.gz     <- rebuilt (full libc++)
 ```
 
+plus, only if Objective-C is used, the runtime under **the same base URL** at `objective-c/` — see
+the Objective-C section.
+
 `serve.mjs` serves the two rebuilt files from `dist/` and proxies the other three from upstream once,
 caching them in `.asset-cache/`. It **refuses to serve the upstream memfs/sysroot**, so an unbuilt
-`dist/` produces a clear error rather than a silent downgrade to the pruned toolchain. If the assets
-can't be reached the output pane says which URL failed
-and how to fix it rather than hanging.
+`dist/` produces a clear error rather than a silent downgrade to the pruned toolchain. It also mirrors
+the Objective-C runtime from upstream under `/clang/objective-c/`, cached the same way. If the assets
+can't be reached the output pane says which URL failed and how to fix it rather than hanging.
 
 To deploy: build the two files, copy all five to a static host / CDN, verify them against
 `toolchain.lock.json`, and pass the CDN URL as `?baseUrl=`.
@@ -151,6 +154,8 @@ The examples:
 | C++23 — expected, print, charconv | `std::expected`, `std::println`, `std::from_chars` |
 | C++20 — `<bit>` (was broken) | `bit_cast`, `popcount`, `bit_ceil` — broken upstream |
 | C — qsort over stdin | C path, `scanf`/`qsort` |
+| ObjC — classes, methods, ivars | Objective-C on libobjc2 — see the Objective-C section |
+| ObjC++ — C++ containers with messages | `.mm`, `std::vector` and `std::accumulate` across a message send |
 
 **Exceptions are not supported — and I could not fix that.** `try`/`catch`/`throw` fail with
 *cannot use 'try' with exceptions disabled*. This is **not a regression**: `cpp-wasm` (the current
@@ -195,6 +200,96 @@ What the demo does instead: it detects `try`/`catch`/`throw` in the source and s
 now **surfaces link errors at all** (see the note about `log: true` below), so the failure is
 explained rather than being a bare `process exited with code 1`.
 
+## Objective-C
+
+Objective-C is supported as a third language mode (`OBJC`, plus `OBJCXX` for `.mm`), and it is a
+separate package entry point rather than a flag on the C++ path.
+
+**What runs it.** `@wasm-idle/llvm-core/objective-c` installs the whole pipeline into the worker: it
+compiles with `-cc1 -x objective-c -fobjc-runtime=gnustep-2.0 -fblocks`, mounts the runtime headers
+into memfs, links **GNUstep's libobjc2** together with a constructor that calls its load function,
+and runs the artifact. None of that is what the Clang runtime's own link line does, so it is reused
+as the package ships it rather than reimplemented — `worker.js` supplies the four host services it
+expects (asset config, asset messages, buffered stdin, and SHA-256 asset verification) and drives it
+through a detached scope, and asks for compile and run separately so the page can time them apart.
+
+`index.html` picks the entry point by language. With `?local=1` both entries come from the one
+bundle, since `vendor-entry.mjs` re-exports both; the CDN default uses `/clang` and `/objective-c`.
+
+**What works.** Classes, ivars, methods and protocols, `class_createInstance`, and Objective-C++
+mixing C++ containers with message sends. Every standard above is selectable here too, and it is
+genuinely applied: `__STDC_VERSION__` tracks `gnu11`/`gnu17`/`gnu23` and `__cplusplus` tracks
+`gnu++20`/`gnu++23`, and C23-only syntax compiles at `gnu23` and correctly fails at `gnu11`. `gnu23`
+and `gnu++23` are the defaults, to match C and C++.
+
+**The shape it needs: there is no class library.** libobjc2 is a *runtime*. There is no `NSObject`,
+no `NSString`, and — worth knowing, because the shipped headers declare it — **no `Object` root class
+either**: subclassing `Object` fails to link with `undefined symbol: ._OBJC_CLASS_Object`. So a
+program declares its own root class and makes instances directly:
+
+```objc
+__attribute__((objc_root_class))
+@interface Counter {
+    Class isa;
+    int _sum;
+}
+- (void)add:(int)amount;
+@end
+
+id counter = class_createInstance(objc_getClass("Counter"), 0);
+```
+
+That is the shape `@wasm-idle`'s own Objective-C example uses — I read it out of their playground —
+and both examples here follow it.
+
+**What does not work, and why.** Two things, both traced to their origin rather than left as a
+shrug.
+
+- **Foundation.** The installer has a Foundation path: it links GNUstep Base and *inlines* its headers
+  into the translation unit instead of mounting them. That does not survive the header set. Thirteen
+  of those headers `#import <GNUstepBase/GSBlocks.h>` and nothing mounts it, so
+  `#import <Foundation/Foundation.h>` dies with *file not found*. Supplying that one header through
+  the installer's own workspace-file mechanism gets nine thousand lines further, into `unknown type
+  name 'gsu128'` and `'NSActivityOptions'` — the inliner emits each header wherever it is first
+  reached without evaluating `#if`, so declarations end up inside branches that are never taken. A
+  *narrow* import (say `<Foundation/NSObject.h>`) does compile and link, and then fails at
+  instantiation with `function signature mismatch` from the libffi bridge. Upstream's own example
+  avoids Foundation entirely, which fits.
+- **Exceptions.** `@try`/`@catch`/`@throw` fail to compile (*cannot use '@try' with Objective-C
+  exceptions disabled*), and `-fobjc-exceptions` only moves the failure to the link: `undefined
+  symbol: objc_exception_throw`, which the archived libobjc2 does not provide.
+
+The demo warns about both before compiling — on a `Foundation/` import, and on `@try` — instead of
+letting either surface as a bare `process exited with code 1`.
+
+**Cost.** 273 KB: `libobjc.a` (190 KB) and `headers.json` (83 KB), fetched once and kept warm in the
+worker. That is the entire additional download, and it is nothing beside the 28.7 MB the C path
+already pulls. The headers cost 27 memfs nodes out of 4091, so capacity is not a question either.
+
+**Pinning.** The six asset names come from the package's own `objective-c` entry point, but the
+receipts are not in the npm tarball. They are pinned in `toolchain.lock.json` under `objectiveC`,
+taken from the hashes the wasm-idle app ships, and all six were re-verified byte-for-byte against the
+live URLs. `worker.js` reads them from the lock at runtime and verifies the **decoded** bytes with
+`crypto.subtle` before the installer sees them, so the lock stays the single source of truth and a
+swapped asset fails loudly. Only two of the six are ever fetched; the other four belong to the
+Foundation path.
+
+**Hosting.** `serve.mjs` mirrors `/clang/objective-c/*` from the producer and caches it under
+`.asset-cache/objective-c/`, so Objective-C comes from the same origin and the same `?baseUrl=` as
+everything else — no second server and no second port. Three of the six assets are published only
+gzipped; the mirror re-serves them at the uncompressed path with `content-encoding: gzip`, and the
+loader inflates them and checks the decoded digest, so the wire cost stays the compressed one.
+
+Measured, real Chromium, over `http://localhost:4173/`:
+
+```
+Counter(sum = 55)                                          main.m    gnu23    exit 0
+Objective-C++ mixes std::vector with messages -> total=15  main.mm   gnu++23  exit 0
+```
+
+Objective-C and C++ coexist in one worker — each installs its own runtime, lazily, on first use of
+that language — and the C and C++ paths are unchanged (re-verified after this landed).
+
 ## Pointing at your own asset host
 
 The compiler binaries are **not** in the npm package — they are fetched from a base URL. Supply yours
@@ -215,6 +310,9 @@ bin/clang.wasm.gz
 bin/lld.wasm.gz
 bin/sysroot.tar.gz
 ```
+
+Objective-C adds the runtime at `objective-c/` under the same base URL, so mirroring that directory
+alongside the five above is all a CDN needs for it.
 
 `bin/` is taken from `manifest.compiler.*.asset`, and the manifest itself is resolved as
 `<baseUrl>/runtime-manifest.v1.json`, so a trailing slash is optional. An unparseable or non-http base
