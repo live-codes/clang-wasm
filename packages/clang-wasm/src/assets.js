@@ -28,8 +28,8 @@ export function resolveAssetSource(options, packaged) {
 		throw new Error(
 			'baseUrl is required here. The assets that ship in this package can only be read where ' +
 				'there is a filesystem, and a browser cannot reach a file inside an npm package - copy ' +
-				'them somewhere your page can fetch with `npx @live-codes/clang-wasm-copy-assets <dir>` ' +
-				'and pass that directory as baseUrl.'
+				'them somewhere your page can fetch with `npx --package @live-codes/clang-wasm ' +
+				'clang-wasm-copy-assets <dir>` and pass that directory as baseUrl.'
 		);
 	}
 	return createPackagedSource(packaged);

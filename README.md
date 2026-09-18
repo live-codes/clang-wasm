@@ -818,7 +818,7 @@ which is the plumbing sketched at the end of this file.
 
 **It carries its own copy of the runtime** - the same seven files this repository serves under
 `/clang/`, 28 MB compressed - so `npm install` is enough in Node, and a browser project gets them
-with `npx @live-codes/clang-wasm-copy-assets public/clang`. Nothing has to be hosted by anyone else,
+with `npx --package @live-codes/clang-wasm clang-wasm-copy-assets public/clang`. Nothing has to be hosted by anyone else,
 and nothing here has to stay up for it to work. Both copies are byte-identical: `toolchain.lock.json`
 pins all seven, and the package's tests fail if either copy drifts from the pins.
 

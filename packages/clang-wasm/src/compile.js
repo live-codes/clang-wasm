@@ -6,7 +6,11 @@ import {
 	clangSystemIncludePaths
 } from '@wasm-idle/llvm-core/core/clang-profile';
 import { cleanProgramOutput, compilerDiagnostics, makeStdin } from './output.js';
-import { addFileWithDirectories, ensureObjectiveCRuntime } from './runtime.js';
+import {
+	addFileWithDirectories,
+	captureCompilerOutput,
+	ensureObjectiveCRuntime
+} from './runtime.js';
 
 // Called once per Objective-C translation unit that declares a class. GNUstep's libobjc2 exposes its
 // load function as `.objcv2_load_function` and expects it to be called before any class is used;
@@ -149,30 +153,6 @@ function failed(raw, error, compileMs) {
 	// instantiation failure - and that message is the only thing worth returning.
 	if (!errors.length) errors.push(String(error?.message ?? error));
 	return { stdout: '', stderr: '', output: '', errors, exitCode: null, compileMs, runMs: null };
-}
-
-// The compiler's diagnostics and the runtime's own log lines share one stream, and the linker's
-// errors are only forwarded when logging is on, so it is turned on for the duration and the stream
-// is redirected into a collector the caller can filter afterwards.
-async function captureCompilerOutput(record, work) {
-	const { runtime } = record;
-	const previousLog = runtime.log;
-	const previousOutput = record.compilerOutput;
-	const chunks = [];
-	runtime.log = true;
-	record.compilerOutput = (chunk) => chunks.push(chunk);
-
-	let result;
-	let error = null;
-	try {
-		result = await work();
-	} catch (caught) {
-		error = caught;
-	} finally {
-		record.compilerOutput = previousOutput;
-		runtime.log = previousLog;
-	}
-	return { result, raw: chunks.join(''), error };
 }
 
 // Objective-C goes through clang's cc1 directly rather than through the runtime's compile() because

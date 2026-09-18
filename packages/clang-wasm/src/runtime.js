@@ -51,6 +51,33 @@ export async function withRuntimeLock(record, work) {
 	}
 }
 
+// The compiler's diagnostics and the runtime's own log lines share one stream, and the linker's
+// errors are only forwarded when logging is on, so it is turned on for the duration and the stream
+// is redirected into a collector the caller can filter afterwards.
+//
+// Callers must hold the runtime lock: there is one collector per record, so two runs at once would
+// capture each other's output.
+export async function captureCompilerOutput(record, work) {
+	const { runtime } = record;
+	const previousLog = runtime.log;
+	const previousOutput = record.compilerOutput;
+	const chunks = [];
+	runtime.log = true;
+	record.compilerOutput = (chunk) => chunks.push(chunk);
+
+	let result;
+	let error = null;
+	try {
+		result = await work();
+	} catch (caught) {
+		error = caught;
+	} finally {
+		record.compilerOutput = previousOutput;
+		runtime.log = previousLog;
+	}
+	return { result, raw: chunks.join(''), error };
+}
+
 // The runtime's memory wrapper does `buf instanceof SharedArrayBuffer` unconditionally, which throws
 // "SharedArrayBuffer is not defined" on a page that is not cross-origin isolated. Nothing on this
 // path allocates a real one - only the package's LLDB debug runtime would, and this package does not

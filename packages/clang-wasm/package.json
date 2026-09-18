@@ -1,6 +1,6 @@
 {
   "name": "@live-codes/clang-wasm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Run C, C++ and Objective-C with one API, on Clang 22 compiled to WebAssembly",
   "type": "module",
   "license": "MIT",
@@ -10,7 +10,13 @@
       "browser": "./src/index.js",
       "default": "./src/index.js"
     },
-    "./iife": "./dist/clang-wasm.global.js"
+    "./toolchain": {
+      "node": "./src/toolchain.node.js",
+      "browser": "./src/toolchain.js",
+      "default": "./src/toolchain.js"
+    },
+    "./iife": "./dist/clang-wasm.global.js",
+    "./iife/toolchain": "./dist/clang-wasm-toolchain.global.js"
   },
   "bin": {
     "clang-wasm-copy-assets": "./bin/copy-assets.mjs"
@@ -34,6 +40,7 @@
     "esbuild": "^0.25.0"
   },
   "dependencies": {
+    "@bjorn3/browser_wasi_shim": "^0.4.2",
     "@wasm-idle/llvm-core": "^1.0.0"
   },
   "keywords": [

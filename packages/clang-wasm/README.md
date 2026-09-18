@@ -3,6 +3,10 @@
 Run **C**, **C++**, **Objective-C** and **Objective-C++** through one API, on Clang 22 compiled to
 WebAssembly. No native toolchain, and no host to set up: the runtime assets ship inside the package.
 
+There is also a lower-level entry, `@live-codes/clang-wasm/toolchain`, for a language that compiles
+*through* Clang rather than being one of those four — see
+[Building another language on the same runtime](#building-another-language-on-the-same-runtime).
+
 ```js
 import { createCompiler } from '@live-codes/clang-wasm';
 
@@ -21,7 +25,7 @@ That is Node, where the packaged assets can be read off disk. **In a browser the
 so a page has to be given a URL - copy the assets into whatever serves your page and pass it:
 
 ```bash
-npx @live-codes/clang-wasm-copy-assets public/clang
+npx --package @live-codes/clang-wasm clang-wasm-copy-assets public/clang
 ```
 
 ```js
@@ -141,6 +145,66 @@ standardsFor('c');         // ['gnu11', 'gnu17', 'gnu23']
 standardsFor('objcpp');    // ['gnu++11', 'gnu++14', 'gnu++17', 'gnu++20', 'gnu++23']
 ```
 
+## Building another language on the same runtime
+
+`createCompiler` covers the four languages above. A language that is not C, C++ or Objective-C but
+still compiles *through* Clang — one whose frontend translates to C, or one that links a runtime of
+its own — cannot use it: the entry point and the link line are decided inside those drivers.
+
+`@live-codes/clang-wasm/toolchain` is that same runtime with the policy taken out.
+
+```js
+import { createToolchain } from '@live-codes/clang-wasm/toolchain';
+
+const toolchain = await createToolchain({ baseUrl });
+const { runtime } = toolchain;
+```
+
+It hands over the pieces a driver needs and says nothing about how to use them:
+
+| Member | What it is |
+| --- | --- |
+| `runtime` | The `@wasm-idle/llvm-core/clang` runtime — `compile`, `run`, `memfs`, `getModule`, `assetUrls`, `compilerConfig`. The escape hatch, and the one part of this API that follows someone else's shape. |
+| `addFile(path, contents)` | Write a file into the runtime's filesystem, creating any directories it needs. |
+| `lock(work)` | Run `work` with exclusive use of the runtime. |
+| `captureCompilerOutput(work)` | Collect clang's and wasm-ld's output, instead of it being logged. Returns `{ result, raw, error }`. |
+| `runCommand(module, options)` | Instantiate and run a `wasi_snapshot_preview1` command module. |
+| `execute(artifact, options)` | Run an artifact the runtime built. |
+| `assetSource` | Where the assets came from, for an error message a user can act on. |
+| `dispose()` | Drop this toolchain's hold on the shared runtime. |
+
+`captureCompilerOutput` hands back clang's and wasm-ld's output exactly as it arrived — ANSI colour
+included, and mixed with the runtime's own log lines. `compilerDiagnostics(raw)` is the export beside
+`createToolchain` that turns it into the lines a caller wants:
+
+```js
+const { raw } = await toolchain.captureCompilerOutput(work);
+compilerDiagnostics(raw);   // string[], runtime chatter and colour removed
+```
+
+**It shares the runtime with `createCompiler`.** Both acquire from one pool, keyed by asset source, so
+a page that runs C/C++ *and* another language pays for one runtime — one ~28 MB asset load, one ~84 MB
+resident — and both queue on the same lock, so they cannot write over each other's files or redirect
+each other's output.
+
+`runCommand` is the half a translator frontend needs. It gives the command its own filesystem, takes
+argv, env and stdin, and hands back what it wrote:
+
+```js
+const command = await toolchain.runCommand(compiledModule, {
+    args: ['main.f'],
+    files: [{ path: 'main.f', contents: source }]
+});
+
+command.exitCode;                                          // the command's own status
+new TextDecoder().decode(command.readFile('main.c'));       // null if it is not there
+```
+
+**This entry is plumbing, not a language.** It will not tell you which objects to link, or where a
+frontend puts its output. The driver is yours to write — the first one is in the `browser-fortran`
+repository, which uses `runCommand` to translate Fortran to C, then `runtime.compile` and a hand-written
+`wasm-ld` line to link `libf2c` in, then `execute` to run it.
+
 ## Loading it without a bundler
 
 `dist/clang-wasm.global.js` is a **minified IIFE bundle** - one classic script, 296 KB - for anywhere
@@ -161,6 +225,22 @@ and `standardsFor` - so the API above is unchanged.
 It is reachable as `@live-codes/clang-wasm/iife` if you want your tooling to find it, and it is
 committed rather than built on install, so a consumer never needs esbuild. Rebuild it with
 `npm run build:iife` after changing anything under `src/`.
+
+The low-level entry has its own bundle, `dist/clang-wasm-toolchain.global.js` (290 KB), reachable as
+`@live-codes/clang-wasm/iife/toolchain` and setting `self.clangWasmToolchain`:
+
+```js
+// a classic worker that has to compile through Clang rather than being C, C++ or Objective-C
+importScripts('clang-wasm-toolchain.global.js');
+
+const toolchain = await self.clangWasmToolchain.createToolchain({ baseUrl: '/clang/' });
+```
+
+They are separate on purpose. The two share their runtime code, so folding the toolchain into the
+language bundle would make every classic worker pay for an API it does not call; a consumer that
+wants both loads both. `clang-wasm.global.js` is unchanged by the addition.
+
+`npm run build:iife` writes both.
 
 **A worker still has no filesystem**, so this bundle always needs a `baseUrl`: it is the browser entry,
 not the Node one. The assets themselves have to be served from somewhere a worker can fetch - see
@@ -194,7 +274,7 @@ real host.
 somewhere it can fetch them:
 
 ```bash
-npx @live-codes/clang-wasm-copy-assets public/clang
+npx --package @live-codes/clang-wasm clang-wasm-copy-assets public/clang
 ```
 
 That writes the tree above, plus an `asset-receipts.json` describing its own bytes, into a directory
