@@ -76,6 +76,51 @@ test('C: a non-zero exit code is reported, not thrown', async () => {
 	compiler.dispose();
 });
 
+test('the frontend is told the macros a bare -cc1 invocation leaves out', async () => {
+	// The runtime drives clang's frontend rather than the driver, and `__GNUC__` is one of the macros
+	// the driver contributes. Its absence is not inert: the `#if` below is the shape Nim's nimbase.h
+	// uses to choose `N_INLINE`, and the branch it takes without the macro puts `__inline` after the
+	// return type - which wasi-libc's `features.h` then rewrites into a syntax error, because by then
+	// the parser is inside the declarator. A driver-invoked clang defines it, so this must too.
+	const compiler = await createCompiler('c', { baseUrl: server.baseUrl });
+	const result = await compiler.run(`#include <stdio.h>
+
+#if defined(__GNUC__)
+#define N_INLINE(rettype, name) inline rettype name
+#else
+#define N_INLINE(rettype, name) rettype __inline name
+#endif
+
+static int value = 7;
+static N_INLINE(int *, counter)(void);
+
+static N_INLINE(int *, counter)(void) { return &value; }
+
+int main(void) {
+	printf("%d.%d.%d %d\\n", __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__, *counter());
+	return 0;
+}
+`);
+
+	assert.deepEqual(result.errors, [], 'expected the GNU branch of the #if to compile');
+	assert.equal(result.stdout, '4.2.1 7\n');
+	compiler.dispose();
+});
+
+test('compileArgs can override the driver defaults', async () => {
+	// They are passed first for exactly this reason: nothing about them should be beyond a caller's
+	// reach if a program wants the bare frontend after all.
+	const compiler = await createCompiler('c', { baseUrl: server.baseUrl });
+	const result = await compiler.run(`#if defined(__GNUC__)
+#error __GNUC__ is defined
+#endif
+int main(void) { return 0; }
+`, '', { compileArgs: ['-fgnuc-version=0'] });
+
+	assert.deepEqual(result.errors, []);
+	assert.equal(result.exitCode, 0);
+	compiler.dispose();
+});
 test('C++: a compile failure returns errors and does not run', async () => {
 	const compiler = await createCompiler('cpp', { baseUrl: server.baseUrl });
 	const result = await compiler.run(
@@ -159,6 +204,27 @@ int main(void) {
 	assert.deepEqual(result.errors, []);
 	assert.equal(result.stdout, 'Counter(sum = 55)\n');
 	assert.equal(result.exitCode, 0);
+	compiler.dispose();
+});
+
+test('Objective-C goes through the same frontend setup', async () => {
+	// Objective-C does not use the runtime's compile() - it needs its own args and its own link line -
+	// so it is a second place the driver defaults have to be applied, and a second place to regress.
+	const compiler = await createCompiler('objc', { baseUrl: server.baseUrl });
+	const result = await compiler.run(`#include <stdio.h>
+
+int main(void) {
+#ifdef __GNUC__
+	printf("%d\\n", __GNUC__);
+#else
+	printf("bare\\n");
+#endif
+	return 0;
+}
+`);
+
+	assert.deepEqual(result.errors, []);
+	assert.equal(result.stdout, '4\n');
 	compiler.dispose();
 });
 

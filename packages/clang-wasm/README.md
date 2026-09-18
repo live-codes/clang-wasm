@@ -182,6 +182,22 @@ const { raw } = await toolchain.captureCompilerOutput(work);
 compilerDiagnostics(raw);   // string[], runtime chatter and colour removed
 ```
 
+`CLANG_DRIVER_DEFAULT_ARGS` is the other export beside `createToolchain`, and it exists for the same
+reason: clang's frontend does not apply every default its driver does, so a driver that compiles C
+itself has to pass them. It currently holds `-fgnuc-version=4.2.1` - what the driver passes - which
+sets `__GNUC__`, `__GNUC_MINOR__` and `__GNUC_PATCHLEVEL__`. Without it, C asking
+`#if defined(__GNUC__)` quietly takes its fallback branch, which is how Nim's `nimbase.h` comes to emit
+C that does not compile. Spread it into the `compileArgs` of your own clang invocation:
+
+```js
+import { CLANG_DRIVER_DEFAULT_ARGS } from '@live-codes/clang-wasm/toolchain';
+
+await runtime.compile({
+    input, code, obj, language: 'C',
+    compileArgs: [...CLANG_DRIVER_DEFAULT_ARGS, ...yourArgs]
+});
+```
+
 **It shares the runtime with `createCompiler`.** Both acquire from one pool, keyed by asset source, so
 a page that runs C/C++ *and* another language pays for one runtime — one ~28 MB asset load, one ~84 MB
 resident — and both queue on the same lock, so they cannot write over each other's files or redirect
@@ -348,6 +364,11 @@ Two things are **not** supported, and both are limitations of the runtime rather
   rejects a duplicate file and the runtime's build cache only helps for byte-identical input. That is
   about four nodes per run out of several thousand free, so it is only a concern for a long-lived
   session that runs thousands of Objective-C programs.
+- **`__GNUC__` is defined.** The runtime drives clang's frontend rather than its driver, and a few
+  driver defaults are not frontend defaults, so `-fgnuc-version=4.2.1` is passed for C, C++,
+  Objective-C and Objective-C++. C that branches on `#if defined(__GNUC__)` therefore takes the branch
+  a plain `clang` invocation would give it. It goes in first, so `compileArgs` still overrides it -
+  pass `-fgnuc-version=0` for the bare frontend.
 - **Node needs `crypto.subtle`** for the Objective-C asset check: Node 20 and later, or a browser in
   a secure context.
 

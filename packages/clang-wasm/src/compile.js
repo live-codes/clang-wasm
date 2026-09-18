@@ -5,6 +5,7 @@ import {
 	OBJECTIVE_C_RUNTIME_FLAGS,
 	clangSystemIncludePaths
 } from '@wasm-idle/llvm-core/core/clang-profile';
+import { CLANG_DRIVER_DEFAULT_ARGS } from './clang-flags.js';
 import { cleanProgramOutput, compilerDiagnostics, makeStdin } from './output.js';
 import {
 	addFileWithDirectories,
@@ -37,7 +38,7 @@ export async function runClangFamily(record, params) {
 		runtime.compileArtifact(code, {
 			language: language.compilerLanguage,
 			fileName,
-			compileArgs
+			compileArgs: [...CLANG_DRIVER_DEFAULT_ARGS, ...compileArgs]
 		})
 	);
 	const compileMs = Math.round(performance.now() - compileStarted);
@@ -177,6 +178,7 @@ async function compileObjectiveCTranslationUnit(runtime, { language, input, obje
 		'wasm32-wasi',
 		'-emit-obj',
 		'-disable-free',
+		...CLANG_DRIVER_DEFAULT_ARGS,
 		'-isysroot',
 		'/',
 		'-resource-dir',

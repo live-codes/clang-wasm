@@ -7,6 +7,7 @@
 // command and reads back a file it wrote, which is how a translator frontend like `f2c` returns its
 // output.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 // By name, so the `node` condition brings the packaged assets in and no server is needed.
 import { createToolchain } from '@live-codes/clang-wasm/toolchain';
@@ -196,4 +197,35 @@ test('without a filesystem baseUrl is required, and the error says what to do', 
 		() => browserEntry.createToolchain(),
 		/baseUrl is required here[\s\S]*copy-assets/
 	);
+});
+
+test('both entries of the low-level API export the same names', async () => {
+	// The browser and Node entries are two files behind one specifier, and a driver only ever sees the
+	// one its environment resolves - so anything added to one and not the other is invisible until
+	// someone on the other side imports it. That is not hypothetical: `CLANG_DRIVER_DEFAULT_ARGS`
+	// landed in the browser entry alone, and only a Node consumer could have found out.
+	const browserEntry = await import('../src/toolchain.js');
+	const nodeEntry = await import('../src/toolchain.node.js');
+
+	assert.deepEqual(
+		Object.keys(browserEntry).sort(),
+		Object.keys(nodeEntry).sort(),
+		'the `browser` and `node` entries of /toolchain must export the same names'
+	);
+});
+
+test('the low-level entries stay off the C/C++ drivers', async () => {
+	// `createToolchain` is the runtime with the policy taken out, and it is the entry for a page that
+	// resolves bare specifiers itself. `compile.js` is that policy, and it needs
+	// `@wasm-idle/llvm-core/core/clang-profile` - a deep subpath such a page is unlikely to have
+	// mapped. Re-exporting a single constant through it is enough to put that requirement on the
+	// entry, so everything re-exported here has to come from a leaf module.
+	for (const entry of ['toolchain.js', 'toolchain.node.js']) {
+		const source = readFileSync(new URL(`../src/${entry}`, import.meta.url), 'utf8');
+		assert.ok(
+			!source.includes("from './compile.js'"),
+			`${entry} must not import ./compile.js: it drags @wasm-idle/llvm-core/core/clang-profile ` +
+				`into the entry's module graph, which a page resolving specifiers itself then has to map`
+		);
+	}
 });
