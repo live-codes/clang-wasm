@@ -1,6 +1,6 @@
 {
   "name": "@live-codes/clang-wasm",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Run C, C++ and Objective-C with one API, on Clang 22 compiled to WebAssembly",
   "type": "module",
   "license": "MIT",

@@ -45,18 +45,39 @@
     }
   },
   "sysroot": {
-    "source": "https://github.com/llvm/llvm-project",
-    "tag": "llvmorg-22.1.0",
-    "libcppVersion": "220100",
-    "why": "The shipped sysroot reports _LIBCPP_VERSION 220100. At this tag all 825 shared files are byte-identical to it, so the sysroot is a pure prune with zero modifications.",
-    "license": "Apache-2.0 WITH LLVM-exception",
-    "mode": "full (--all, excludes __cxx03/)",
+    "why": "The shipped sysroot is a prune of two upstream trees, and both are pure prunes with zero modifications - so re-adding files reproduces the original tree, with no version skew against the prebuilt libc.a and libc++.a already in lib/. The C headers are restored wholesale rather than selectively because a prune cannot be referentially closed: pruning wasi-libc kept <unistd.h>, which includes <__header_unistd.h> and <bits/posix.h>, and dropped both - so a header the sysroot ships could not be preprocessed at all, by any C program.",
+    "license": "Apache-2.0 WITH LLVM-exception for libc++, plus wasi-libc's own licenses (Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, CC0-1.0)",
+    "libcxx": {
+      "source": "https://github.com/llvm/llvm-project",
+      "tag": "llvmorg-22.1.0",
+      "libcppVersion": "220100",
+      "note": "The shipped sysroot reports _LIBCPP_VERSION 220100. At this tag all 825 shared files are byte-identical to it.",
+      "mode": "full (--all, excludes __cxx03/)",
+      "restoredFiles": 279,
+      "nodeCost": 296,
+      "landing": "include/c++/v1"
+    },
+    "libc": {
+      "source": "https://github.com/WebAssembly/wasi-sdk",
+      "version": "33.0",
+      "asset": "wasi-sdk-33.0-x86_64-linux.tar.gz",
+      "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz",
+      "sha256": "0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce",
+      "bytes": 193563606,
+      "path": "share/wasi-sysroot/include/wasm32-wasi",
+      "whyIdentified": "By comparison, not by release notes: all 42 C headers the shipped sysroot already has are byte-identical to 33.0's, and 11 of them differ from 26.0's - so 33.0 is the tree the sysroot was pruned from. 26.0 is pinned above for memfs, which is the compiler side of memfs.c and unrelated to the sysroot.",
+      "skipped": "eh/ and noeh/ - the SDK carries libc++ twice under this directory, once per exception model - and c++/ in older SDKs. This sysroot keeps its libc++ at include/c++/v1, restored from llvm-project.",
+      "restoredFiles": 164,
+      "nodeCost": 169,
+      "weighs": "65.5 KB on the wire (5,401,380 vs 5,334,358 bytes); 378 KB of headers in all, of which 214 KB was already shipped",
+      "landing": "include/wasm32-wasi"
+    },
     "outputs": {
       "sysroot.tar.gz": {
-        "sha256": "71c0ca54a2153bba59b4a80f68d2030142cc78aad48e76c0b73493cf5078dd19",
-        "bytes": 5334358,
-        "restoredFiles": 279,
-        "nodeCost": 296
+        "sha256": "195e8083bace1baf86014f134a210db354cd77825988eaac7d262161cf496c4f",
+        "bytes": 5401380,
+        "restoredFiles": 443,
+        "nodeCost": 465
       }
     }
   },

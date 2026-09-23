@@ -272,7 +272,7 @@ runtime-manifest.v1.json     876 B
 bin/memfs.wasm.gz             38 KB
 bin/clang.wasm.gz           15.0 MB
 bin/lld.wasm.gz              7.5 MB
-bin/sysroot.tar.gz           5.1 MB
+bin/sysroot.tar.gz           5.2 MB
 objective-c/                          <- only fetched if you use Objective-C
   libobjc.a                  190 KB
   headers.json                83 KB
@@ -317,13 +317,14 @@ or in your build - `asset-receipts.json` is written next to the copy for exactly
 
 ### Size
 
-28 MB compressed, about 84 MB unpacked and resident. `npm install` pays it once; the runtime keeps it
+28 MB compressed, about 85 MB unpacked and resident. `npm install` pays it once; the runtime keeps it
 in memory between runs, which is what makes a warm compile ~100 ms instead of ~3 s.
 
 ## What each language can do
 
-C and C++ are the full toolchain: C++23 and C23 with a complete libc++. The standards are real, not
-decorative - pass `std: 'gnu++20'` and `__cplusplus` becomes `202002`.
+C and C++ are the full toolchain: C++23 and C23 with a complete libc++, and the whole of wasi-libc's C
+header tree - every public C header it ships preprocesses, which a test asserts one header at a time.
+The standards are real, not decorative - pass `std: 'gnu++20'` and `__cplusplus` becomes `202002`.
 
 Objective-C is **GNUstep's libobjc2, which is a runtime and not a class library**. There is no
 `NSObject` and no `NSString`, and although the shipped headers declare an `Object` root class,
@@ -382,7 +383,10 @@ Real compiles for all four languages, in two halves. The packaged half runs stra
 with no server at all; the hosted half starts the parent repository's `serve.mjs` on a free port, so
 it also needs the rebuilt sysroot in `dist/` (see the parent README). The suite also checks that the
 shipped bytes hash to their receipts and that those receipts still agree with
-`toolchain.lock.json`.
+`toolchain.lock.json`. `test/sysroot.test.js` reads the headers out of the shipped tarball and
+compiles each public one on its own, then compiles the POSIX ones together in a single translation
+unit - a prune that keeps a header and drops a file it includes fails there rather than in someone's
+build.
 
 ## License
 

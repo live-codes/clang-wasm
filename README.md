@@ -86,17 +86,23 @@ C (28 cases):
 Again a strict superset. C23 adds `bool`/`true`/`false` and `static_assert` as keywords, `nullptr`,
 `constexpr`, `unreachable()`, and digit separators.
 
-**C23's library side is thinner than C++23's** — the same 3 headers are missing at *both* standards,
-so they are not a reason to prefer C17:
+**C23's library side is thinner than C++23's**, but only where wasi-libc itself has nothing: `<stdbit.h>`
+and `<stdckdint.h>` are not in it at all, so they fail at *both* standards (`fatal error: 'stdbit.h'
+file not found`) and are not a reason to prefer C17. `<uchar.h>` and `<threads.h>` were missing for the
+other reason - they had been pruned - and are now present, along with the C headers generally.
 
-- `<uchar.h>` — `fatal error: 'uchar.h' file not found`
-- `<threads.h>` — `fatal error: 'threads.h' file not found`
-- `<stdbit.h>` — `fatal error: 'stdbit.h' file not found`
+That second reason was a real defect, and it is worth stating plainly. The sysroot is a prune of
+wasi-libc, and the first rebuild here restored only libc++ - so the C headers were whatever the prune
+had left, 42 of them, and a prune cannot be referentially closed. `<unistd.h>` was kept while the two
+headers it includes, `<__header_unistd.h>` and `<bits/posix.h>`, were dropped, so including
+`<unistd.h>` failed with *file not found* for a header the sysroot ships. All 206 C headers are now
+restored from wasi-sdk 33.0, at a cost of 65 KB on the wire, and `test/sysroot.test.js` compiles every
+public header on its own so the next prune cannot do this quietly.
 
-These come from **wasi-libc**, and the rebuild only restored **libc++ (C++)** headers — wasi-libc's C
-headers were never touched. So "C23" here means the C23 *language* plus a partial C23 library. Adding
-`<stdbit.h>` would be cheap (it is mostly macros and builtins); `<threads.h>` would need a real
-threading implementation.
+`<stdatomic.h>` is still missing, and is a separate case: it is Clang's own header rather than
+wasi-libc's, and the packaged Clang resource directory is pruned to the seventeen headers
+`<stdarg.h>` and `<stddef.h>` need. A C11 program that wants atomics has to bring its own, which is
+what the browser PoC in `browser-v` does.
 
 Be aware that C23 is a more disruptive change than C++23 relative to C17: several words became
 keywords, and an empty parameter list `()` now means `(void)` rather than "unspecified". Clang's own
@@ -130,7 +136,7 @@ runtime-manifest.v1.json
 bin/memfs.wasm.gz      <- rebuilt (4096 nodes)
 bin/clang.wasm.gz
 bin/lld.wasm.gz
-bin/sysroot.tar.gz     <- rebuilt (full libc++)
+bin/sysroot.tar.gz     <- rebuilt (full libc++, plus wasi-libc's C headers)
 ```
 
 plus, only if Objective-C is used, the runtime under **the same base URL** at `objective-c/` — see
@@ -372,9 +378,9 @@ Identical source is served from an internal build cache in ~1 ms.
 | `bin/memfs.wasm.gz` | 19 KB | 345 KB |
 | `bin/clang.wasm.gz` | 15.7 MB | 44.2 MB |
 | `bin/lld.wasm.gz` | 7.8 MB | 20.8 MB |
-| `bin/sysroot.tar.gz` | 5.1 MB | 19.3 MB |
+| `bin/sysroot.tar.gz` | 5.2 MB | 19.7 MB |
 
-~28.7 MB on the wire, ~84 MB decompressed. Hashes are pinned upstream in
+~28.8 MB on the wire, ~85 MB decompressed. Hashes are pinned upstream in
 `src/lib/playground/clangAssetIntegrity.ts`. For production you would mirror these yourself rather
 than depend on someone else's deployment (the author hosts them for the wasm-idle demo only).
 
@@ -659,7 +665,11 @@ git -C llvm-src sparse-checkout init --cone
 git -C llvm-src sparse-checkout set libcxx/include
 git -C llvm-src checkout
 tar -xzf <upstream>/sysroot.tar.gz -C wfinal
+# The C headers, wholesale: the prune left <unistd.h> without the two headers it includes.
+tar -xzf wasi-sdk-33.0-x86_64-linux.tar.gz -C wasi-sdk-33 --strip-components=1 \
+  wasi-sdk-33.0-x86_64-linux/share/wasi-sysroot/include/wasm32-wasi
 node build-sysroot.mjs --libcxx llvm-src/libcxx/include --sysroot wfinal --exact \
+  --libc wasi-sdk-33/share/wasi-sysroot/include/wasm32-wasi \
   --features bit,expected,numbers,source_location,typeindex,__bit/byteswap.h,\
 __expected/bad_expected_access.h,__expected/expected.h,__expected/unexpect.h,\
 __expected/unexpected.h,__ostream/print.h --out dist/sysroot.tar.gz
@@ -756,8 +766,8 @@ module fail to instantiate. The script asserts the final module imports **only**
 functions before it will emit it.
 
 **Result** — measured by driving the module directly, the ceiling goes from 1019 to **4091 nodes**.
-`dist/memfs.wasm.gz` (38 KiB) plus `dist/sysroot.tar.gz` (5.1 MB, full libc++: 279 files restored,
-296 nodes) were verified in Chromium against the live toolchain:
+`dist/memfs.wasm.gz` (38 KiB) plus `dist/sysroot.tar.gz` (5.2 MB, full libc++ and wasi-libc: 443
+files restored, 465 nodes) were verified in Chromium against the live toolchain:
 
 ```
 OK std::span        OK std::ranges      OK std::expected   OK std::println

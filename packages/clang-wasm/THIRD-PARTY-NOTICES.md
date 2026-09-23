@@ -30,9 +30,11 @@ repository's `toolchain.lock.json` next to a note on where each one came from.
   targeting `wasm32-wasi` (WASI preview 1). Apache-2.0 WITH LLVM-exception; the exception is what
   keeps this package's permissive licensing simple.
 - **The sysroot.** libc++ headers are from `llvm-project` tag `llvmorg-22.1.0`, restored where the
-  producer had pruned them. wasi-libc is from WASI SDK 33. wasi-libc is explicitly multi-licensed
-  under Apache-2.0 WITH LLVM-exception, Apache-2.0 and MIT, and the parts of it derived from other
-  works keep theirs: dlmalloc is CC0, emmalloc and musl-derived files are MIT, cloudlibc is
+  producer had pruned them. The C headers are wasi-libc's, from WASI SDK 33.0, restored in full for
+  the same reason: a prune leaves headers that include files it dropped, which is how `<unistd.h>`
+  came to be shipped without `<__header_unistd.h>` and `<bits/posix.h>`. wasi-libc is explicitly
+  multi-licensed under Apache-2.0 WITH LLVM-exception, Apache-2.0 and MIT, and the parts of it derived
+  from other works keep theirs: dlmalloc is CC0, emmalloc and musl-derived files are MIT, cloudlibc is
   BSD-2-Clause, and musl-fts is BSD-3-Clause.
 - **libobjc2.** GNUstep's Objective-C runtime, MIT. It is the whole Objective-C runtime: it is a
   runtime and not a class library, which is why this package has no `NSObject`.

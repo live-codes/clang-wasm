@@ -27,8 +27,8 @@ export const ASSET_RECEIPTS = Object.freeze({
 		sha256: 'f842a9b5df3c6d326f0260bfd313c11c2e22bc8b8ae0387deede9a4af55779cd'
 	}),
 	'bin/sysroot.tar.gz': Object.freeze({
-		bytes: 5334358,
-		sha256: '71c0ca54a2153bba59b4a80f68d2030142cc78aad48e76c0b73493cf5078dd19'
+		bytes: 5401380,
+		sha256: '195e8083bace1baf86014f134a210db354cd77825988eaac7d262161cf496c4f'
 	}),
 	'objective-c/libobjc.a': Object.freeze({
 		bytes: 190272,
